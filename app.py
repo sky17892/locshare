@@ -1,28 +1,40 @@
+# app.py
+
 from __future__ import annotations
 
 import os
-from dotenv import load_dotenv # .env 파일 로드를 위해 추가
+from dotenv import load_dotenv 
 
-# .env 파일을 읽어 환경 변수를 로드합니다. (로컬 실행 시 필요)
+# .env 파일을 읽어 환경 변수를 로드합니다.
 load_dotenv() 
 
 import secrets
 from collections import deque
-from datetime import datetime, timezone
-from typing import Any, Deque, Dict, Optional, TYPE_CHECKING # TYPE_CHECKING 추가
+from datetime import datetime, timezone, timedelta
+from typing import Any, Deque, Dict, Optional
+import atexit # 애플리케이션 종료 시 스케줄러를 종료하기 위해 추가
 
 from flask import Flask, abort, jsonify, render_template, request, url_for
+from apscheduler.schedulers.background import BackgroundScheduler # 스케줄러 추가
 
 # Vercel 배포 시, template_folder 경로를 상위 폴더로 변경해야 함.
 app = Flask(__name__) 
 
-# 환경 변수에서 ADMIN_KEY를 가져옵니다. 설정되지 않았다면 "changeme" 사용.
+# ----------------------------------------------------
+# ⚙️ 환경 변수 및 전역 설정
+# ----------------------------------------------------
+
+# 환경 변수에서 ADMIN_KEY를 가져옵니다.
 ADMIN_KEY = os.environ.get("ADMIN_KEY", "changeme")
-MAX_HISTORY = 1000 # 기록 최대 길이
+# 환경 변수에서 MAX_HISTORY를 가져옵니다. (기본값: 1000)
+MAX_HISTORY = int(os.environ.get("MAX_HISTORY", 1000)) 
+# 세션 만료 기간 (시간 단위). (기본값: 24시간)
+MAX_SESSION_LIFETIME_HOURS = int(os.environ.get("MAX_SESSION_LIFETIME_HOURS", 24))
+
 
 # 타입 힌트 단순화를 위해 Dict[str, Any]를 SessionDict로 정의
 SessionDict = Dict[str, Any]
-# 메모리 내 공유 세션 저장소 (실서비스에서는 DB/캐시 사용 권장)
+# 메모리 내 공유 세션 저장소
 sessions: Dict[str, SessionDict] = {}
 
 
@@ -33,6 +45,53 @@ def _get_session(token: str) -> Dict[str, Any]:
         abort(404, description="Unknown share token")
     return session
 
+# ----------------------------------------------------
+# 🧹 세션 정리(Cleanup) 로직 (APScheduler Job)
+# ----------------------------------------------------
+
+def cleanup_expired_sessions():
+    """만료된 세션을 메모리에서 정리합니다."""
+    
+    # 만료 기준 시각 계산 (현재 시각 - 세션 수명)
+    expiration_time = datetime.now(timezone.utc) - timedelta(hours=MAX_SESSION_LIFETIME_HOURS)
+    
+    tokens_to_delete = []
+    
+    # 'sessions' 딕셔너리를 순회하며 만료된 세션 찾기
+    for token, data in sessions.items():
+        # 세션 생성 시각이 만료 기준 시각보다 이전이면 삭제 대상으로 지정
+        created_at_str = data.get("created_at")
+        if created_at_str:
+            created_at = datetime.fromisoformat(created_at_str)
+            if created_at < expiration_time:
+                tokens_to_delete.append(token)
+
+    # 정리
+    for token in tokens_to_delete:
+        del sessions[token]
+        
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {len(tokens_to_delete)}개의 만료된 세션 정리 완료 (만료 기준: {MAX_SESSION_LIFETIME_HOURS}시간)")
+
+
+# ----------------------------------------------------
+# 🚀 스케줄러 설정 및 시작
+# ----------------------------------------------------
+
+# 백그라운드 스케줄러 인스턴스 생성
+scheduler = BackgroundScheduler()
+
+# cleanup_expired_sessions 함수를 매 30분마다 실행하도록 설정
+# cron 트리거 대신 interval 트리거를 사용하여 설정의 단순성을 높였습니다.
+scheduler.add_job(func=cleanup_expired_sessions, trigger="interval", minutes=30)
+scheduler.start()
+
+# 애플리케이션 종료 시 스케줄러를 안전하게 종료하도록 설정
+atexit.register(lambda: scheduler.shutdown())
+
+
+# ----------------------------------------------------
+# 🗺️ 경로 (Routes) 정의
+# ----------------------------------------------------
 
 @app.get("/")
 def index():
@@ -44,12 +103,13 @@ def index():
 def create_session():
     """새로운 위치 공유 세션을 생성하고 토큰 및 URL 반환"""
     token = secrets.token_urlsafe(8)
-    # _external=True는 외부에서 접근 가능한 전체 URL을 생성 (Vercel 배포 시 필수)
     track_url = url_for("track_page", token=token, _external=True) 
     
+    # created_at 필드를 추가하여 만료 기간을 계산할 수 있도록 함
     sessions[token] = {
+        "created_at": datetime.now(timezone.utc).isoformat(), # UTC 시간으로 생성 시각 기록
         "latest": None,
-        "history": deque(maxlen=MAX_HISTORY), # Deque를 사용하여 최대 기록 수 제한
+        "history": deque(maxlen=MAX_HISTORY),
         "track_url": track_url,
     }
     return (
@@ -57,7 +117,7 @@ def create_session():
             {
                 "token": token,
                 "share_url": url_for("share_page", token=token, _external=True),
-                "track_url": track_url, # 트랙 URL도 함께 반환
+                "track_url": track_url,
             }
         ),
         201,
@@ -119,11 +179,8 @@ def admin_sessions():
     """관리자 페이지 (ADMIN_KEY 필요)"""
     key = request.args.get("key")
     if key != ADMIN_KEY:
-        # 키가 일치하지 않으면 접근 거부
         abort(403, description="Forbidden") 
     
-    # ... (관리자 페이지 로직 생략 없이 그대로 유지)
-
     token_filter = request.args.get("token")
     items = [
         {
@@ -135,7 +192,11 @@ def admin_sessions():
         }
         for token, data in sessions.items()
     ]
-    items.sort(key=lambda item: item["token"])
+    # 세션 생성 시각을 기준으로 정렬 (최신 순)
+    items.sort(
+        key=lambda item: datetime.fromisoformat(sessions[item['token']].get("created_at", datetime.min.isoformat())), 
+        reverse=True
+    )
 
     selected_history = []
     selected_token = None
@@ -143,6 +204,7 @@ def admin_sessions():
         target = sessions.get(token_filter)
         if target:
             selected_token = token_filter
+            # 기록은 최신 순으로 표시하기 위해 역순으로 변환
             selected_history = list(reversed(target["history"]))
 
     return render_template(
@@ -155,6 +217,8 @@ def admin_sessions():
 
 
 if __name__ == "__main__":
-    # 로컬 테스트를 위해 8888 포트에서 실행
     print(f"ADMIN_KEY: {ADMIN_KEY}")
-    app.run(debug=True, host="0.0.0.0", port=8888)
+    print(f"MAX_HISTORY: {MAX_HISTORY}")
+    print(f"MAX_SESSION_LIFETIME_HOURS: {MAX_SESSION_LIFETIME_HOURS}시간")
+    print("APScheduler가 백그라운드에서 실행 중입니다...")
+    app.run(debug=True, host="0.0.0.0", port=8888, use_reloader=False) 
