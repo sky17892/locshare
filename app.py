@@ -27,9 +27,9 @@ app = Flask(__name__)
 # 환경 변수에서 ADMIN_KEY를 가져옵니다.
 ADMIN_KEY = os.environ.get("ADMIN_KEY", "changeme")
 # 환경 변수에서 MAX_HISTORY를 가져옵니다. (기본값: 1000)
-MAX_HISTORY = int(os.environ.get("MAX_HISTORY", 1000)) 
+MAX_HISTORY = int(os.environ.get("MAX_HISTORY", 1500)) 
 # 세션 만료 기간 (시간 단위). (기본값: 24시간)
-MAX_SESSION_LIFETIME_HOURS = int(os.environ.get("MAX_SESSION_LIFETIME_HOURS", 24))
+MAX_SESSION_LIFETIME_HOURS = int(os.environ.get("MAX_SESSION_LIFETIME_HOURS", 720))
 
 
 # 타입 힌트 단순화를 위해 Dict[str, Any]를 SessionDict로 정의
