@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>세션 관리자</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/site.css') }}" />
+  </head>
+  <body class="page">
+    <header class="banner banner--accent">
+      <h1>위치 공유 세션 관리자</h1>
+      <p>이 페이지는 관리자 키가 있어야 접근 가능합니다.</p>
+    </header>
+    <main class="card card--admin">
+      {% if sessions %}
+      <table>
+        <thead>
+          <tr>
+            <th>토큰</th>
+            <th>공유 URL</th>
+            <th>조회 URL</th>
+            <th>위치 수신</th>
+            <th>기록</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in sessions %}
+          <tr>
+            <td><code>{{ item.token }}</code></td>
+            <td><a href="{{ item.share_url }}" target="_blank">열기</a></td>
+            <td>
+              {% if item.track_url %}
+              <a href="{{ item.track_url }}" target="_blank">관리자 조회</a>
+              {% else %}-{% endif %}
+            </td>
+            <td>{{ "O" if item.has_location else "X" }}</td>
+            <td>
+              {{ item.count }}/{{ max_history }}
+              <a
+                href="{{ url_for('admin_sessions') }}?key={{ request.args.get('key') }}&token={{ item.token }}"
+                >보기</a
+              >
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% if selected_token %}
+      <section style="margin-top: 2rem">
+        <h2>토큰 {{ selected_token }} 기록 (최대 {{ max_history }}건)</h2>
+        {% if history %}
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>위도</th>
+              <th>경도</th>
+              <th>정확도</th>
+              <th>방향</th>
+              <th>속도</th>
+              <th>수신 시각</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in history %}
+            <tr>
+              <td>{{ loop.index }}</td>
+              <td>{{ "%.6f"|format(item.lat) }}</td>
+              <td>{{ "%.6f"|format(item.lng) }}</td>
+              <td>{{ item.accuracy or "-" }}</td>
+              <td>{{ item.heading or "-" }}</td>
+              <td>{{ item.speed or "-" }}</td>
+              <td>{{ item.captured_at }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% else %}
+        <p>기록이 없습니다.</p>
+        {% endif %}
+      </section>
+      {% endif %}
+      {% else %}
+      <p>생성된 세션이 아직 없습니다.</p>
+      {% endif %}
+    </main>
+  </body>
+</html>
+

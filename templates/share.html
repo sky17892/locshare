@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>내 위치 공유하기</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/site.css') }}" />
+  </head>
+  <body class="page">
+    <header class="banner banner--accent">
+      <p class="badge">LIVE</p>
+      <h1>실시간 위치 공유 중</h1>
+      <p>이 페이지를 닫으면 공유가 중단됩니다.</p>
+    </header>
+
+    <main class="card card--mobile">
+      <section class="phone-column">
+        {% include "_phone_preview.html" %}
+      </section>
+      <section class="status">
+        <div class="status-chip">토큰 {{ token }}</div>
+        <p id="status-text" class="status__text">대기 중...</p>
+        <button id="stop-btn" class="btn btn-primary">공유 중지</button>
+      </section>
+    </main>
+
+    <script>
+      const token = '{{ token }}';
+      const statusText = document.getElementById('status-text');
+      const stopBtn = document.getElementById('stop-btn');
+
+      if (!('geolocation' in navigator)) {
+        statusText.textContent = '이 기기에서 위치 정보를 사용할 수 없습니다.';
+      } else {
+        const watchId = navigator.geolocation.watchPosition(
+          async (pos) => {
+            const { latitude, longitude, accuracy, heading, speed } = pos.coords;
+            statusText.textContent = '위치 전송 중...';
+            await fetch(`/api/location/${token}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                lat: latitude,
+                lng: longitude,
+                accuracy,
+                heading,
+                speed,
+              }),
+            });
+          },
+          (err) => {
+            statusText.textContent = `위치 권한 필요: ${err.message}`;
+          },
+          {
+            enableHighAccuracy: true,
+            maximumAge: 5000,
+            timeout: 15000,
+          }
+        );
+
+        stopBtn.addEventListener('click', () => {
+          navigator.geolocation.clearWatch(watchId);
+          statusText.textContent = '공유를 중지했습니다.';
+          stopBtn.disabled = true;
+        });
+      }
+    </script>
+  </body>
+</html>
+
