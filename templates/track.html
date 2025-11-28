@@ -48,6 +48,41 @@
         </dl>
         <button id="stop-btn" class="btn btn-primary">조회 중지</button>
       </section>
+      
+      <!-- 세션 관리 정보 섹션 -->
+      <section class="status" style="margin-top: 2rem;">
+        <h3>세션 관리 정보</h3>
+        <div id="session-info" style="margin-bottom: 1rem;">
+          <p><strong>토큰:</strong> <code>{{ token }}</code></p>
+          {% if session_info %}
+          <p><strong>생성 시각:</strong> {{ session_info.created_at or '-' }}</p>
+          <p><strong>위치 수신:</strong> {{ "O" if session_info.has_location else "X" }}</p>
+          <p><strong>기록 수:</strong> {{ session_info.count }}/{{ session_info.max_history }}</p>
+          {% endif %}
+        </div>
+        <button id="show-history-btn" class="btn btn-primary" style="margin-bottom: 1rem;">기록 보기</button>
+        <div id="history-section" style="display: none;">
+          <h4>위치 기록 (최대 {{ session_info.max_history if session_info else 1000 }}건)</h4>
+          <div class="table-wrapper" style="max-height: 400px; overflow-y: auto;">
+            <table id="history-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>위도</th>
+                  <th>경도</th>
+                  <th>정확도</th>
+                  <th>방향</th>
+                  <th>속도</th>
+                  <th>수신 시각</th>
+                </tr>
+              </thead>
+              <tbody id="history-tbody">
+                <tr><td colspan="7">로딩 중...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
     </main>
 
     <script>
@@ -192,6 +227,48 @@
           clearInterval(pollInterval);
         }
       });
+
+      // 세션 기록 관리 기능
+      const showHistoryBtn = document.getElementById('show-history-btn');
+      const historySection = document.getElementById('history-section');
+      const historyTbody = document.getElementById('history-tbody');
+
+      // 기록 보기 버튼 클릭 이벤트
+      if (showHistoryBtn) {
+        showHistoryBtn.addEventListener('click', async () => {
+          if (historySection.style.display === 'none') {
+            historySection.style.display = 'block';
+            
+            // 기록 로딩
+            try {
+              historyTbody.innerHTML = '<tr><td colspan="7">로딩 중...</td></tr>';
+              const response = await fetch(`/api/session/${token}/history`);
+              const data = await response.json();
+              
+              if (data.history && data.history.length > 0) {
+                historyTbody.innerHTML = data.history.map((item, index) => `
+                  <tr>
+                    <td>${index + 1}</td>
+                    <td>${parseFloat(item.lat).toFixed(6)}</td>
+                    <td>${parseFloat(item.lng).toFixed(6)}</td>
+                    <td>${item.accuracy ? parseFloat(item.accuracy).toFixed(0) + ' m' : '-'}</td>
+                    <td>${item.heading ? parseFloat(item.heading).toFixed(1) + '°' : '-'}</td>
+                    <td>${item.speed ? (parseFloat(item.speed) * 3.6).toFixed(1) + ' km/h' : '-'}</td>
+                    <td>${item.captured_at || '-'}</td>
+                  </tr>
+                `).join('');
+              } else {
+                historyTbody.innerHTML = '<tr><td colspan="7">기록이 없습니다.</td></tr>';
+              }
+            } catch (error) {
+              console.error('기록 조회 오류:', error);
+              historyTbody.innerHTML = '<tr><td colspan="7">기록을 불러오는 중 오류가 발생했습니다.</td></tr>';
+            }
+          } else {
+            historySection.style.display = 'none';
+          }
+        });
+      }
     </script>
   </body>
 </html>
