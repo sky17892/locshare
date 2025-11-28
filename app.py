@@ -100,25 +100,10 @@ with app.app_context():
 # 헬퍼 함수, 정리 로직, 스케줄러 (변경 없음)
 # ----------------------------------------------------
 
-def _check_and_cleanup_expired_session(session: Session) -> bool:
-    """세션이 만료되었는지 확인하고, 만료되었으면 삭제. True면 만료됨, False면 유효함"""
-    if session.created_at:
-        expiration_time = datetime.utcnow() - timedelta(hours=MAX_SESSION_LIFETIME_HOURS)
-        if session.created_at < expiration_time:
-            db.session.delete(session)
-            db.session.commit()
-            return True
-    return False
-
 def _get_session(token: str) -> Session:
     session = Session.query.filter_by(token=token).first()
     if session is None:
         abort(404, description="Unknown share token")
-    
-    # 세션 만료 체크 및 자동 삭제
-    if _check_and_cleanup_expired_session(session):
-        abort(404, description="Session expired")
-    
     return session
 
 def cleanup_expired_sessions():
@@ -134,16 +119,13 @@ def cleanup_expired_sessions():
         
         print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {count}개의 만료된 세션 정리 완료 (기준: {MAX_SESSION_LIFETIME_HOURS}시간)")
 
-# Vercel 환경에서는 스케줄러를 사용하지 않고, 요청 기반 lazy cleanup을 사용합니다.
-# 로컬 환경에서만 스케줄러를 활성화합니다.
-if not (os.getenv('VERCEL') == '1' or os.getenv('VERCEL_ENV')):
-    scheduler = BackgroundScheduler()
-    scheduler.add_job(func=cleanup_expired_sessions, trigger="interval", minutes=30)
-    scheduler.start()
-    atexit.register(lambda: scheduler.shutdown())
-    print("APScheduler가 백그라운드에서 실행 중입니다...")
-else:
-    print("INFO: Vercel 환경 감지 - 스케줄러 비활성화, 요청 기반 정리 사용")
+scheduler = BackgroundScheduler()
+# APScheduler는 Vercel의 서버리스 환경에서는 제대로 작동하지 않을 수 있습니다.
+# Vercel 함수가 주기적으로 실행되는 환경이 아니기 때문입니다.
+# 하지만 로컬 테스트 및 구색을 위해 코드는 유지합니다.
+scheduler.add_job(func=cleanup_expired_sessions, trigger="interval", minutes=30)
+scheduler.start()
+atexit.register(lambda: scheduler.shutdown())
 
 
 # ----------------------------------------------------
@@ -167,7 +149,7 @@ def create_session():
 @app.get("/share/<token>")
 def share_page(token: str):
     _get_session(token)
-    return render_template("share.html", token=token, max_session_lifetime_hours=MAX_SESSION_LIFETIME_HOURS)
+    return render_template("share.html", token=token)
 
 
 @app.post("/api/location/<token>")
@@ -230,7 +212,7 @@ def latest_location(token: str):
 @app.get("/track/<token>")
 def track_page(token: str):
     _get_session(token)
-    return render_template("track.html", token=token, max_session_lifetime_hours=MAX_SESSION_LIFETIME_HOURS)
+    return render_template("track.html", token=token)
 
 
 @app.get("/admin")
@@ -238,15 +220,6 @@ def admin_sessions():
     key = request.args.get("key")
     if key != ADMIN_KEY:
         abort(403, description="Forbidden") 
-    
-    # 만료된 세션 자동 정리
-    expiration_time = datetime.utcnow() - timedelta(hours=MAX_SESSION_LIFETIME_HOURS)
-    expired_sessions = Session.query.filter(Session.created_at < expiration_time).all()
-    for s in expired_sessions:
-        db.session.delete(s)
-    if expired_sessions:
-        db.session.commit()
-        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {len(expired_sessions)}개의 만료된 세션 정리 완료 (기준: {MAX_SESSION_LIFETIME_HOURS}시간)")
     
     token_filter = request.args.get("token")
     all_sessions = Session.query.order_by(Session.created_at.desc()).all()
