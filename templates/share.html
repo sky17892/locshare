@@ -9,8 +9,8 @@
   <body class="page">
     <header class="banner banner--accent">
       <p class="badge">LIVE</p>
-      <h1>실시간 위치 공유 중</h1>
-      <p>이 페이지를 닫으면 공유가 중단됩니다.</p>
+      <!--<h1>실시간 위치 공유 중</h1>
+      <p>이 페이지를 닫으면 공유가 중단됩니다.</p>-->
     </header>
 
     <main class="card card--mobile">
@@ -35,7 +35,7 @@
         const watchId = navigator.geolocation.watchPosition(
           async (pos) => {
             const { latitude, longitude, accuracy, heading, speed } = pos.coords;
-            statusText.textContent = '위치 전송 중...';
+            statusText.textContent = '';
             await fetch(`/api/location/${token}`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
