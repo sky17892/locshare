@@ -29,27 +29,49 @@
       const statusText = document.getElementById('status-text');
       const stopBtn = document.getElementById('stop-btn');
 
-      if (!('geolocation' in navigator)) {
-        statusText.textContent = '이 기기에서 위치 정보를 사용할 수 없습니다.';
-      } else {
-        const watchId = navigator.geolocation.watchPosition(
+      let watchId = null;
+      let isSharing = false;
+
+      // 위치를 서버에 전송하는 함수
+      async function sendLocation(pos) {
+        const { latitude, longitude, accuracy, heading, speed } = pos.coords;
+        try {
+          await fetch(`/api/location/${token}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              lat: latitude,
+              lng: longitude,
+              accuracy,
+              heading,
+              speed,
+            }),
+          });
+        } catch (error) {
+          console.error('위치 전송 오류:', error);
+        }
+      }
+
+      // 위치 공유 시작
+      function startSharing() {
+        if (isSharing) return;
+        isSharing = true;
+
+        if (!('geolocation' in navigator)) {
+          if (statusText) {
+            statusText.textContent = '이 기기에서 위치 정보를 사용할 수 없습니다.';
+          }
+          return;
+        }
+
+        watchId = navigator.geolocation.watchPosition(
           async (pos) => {
-            const { latitude, longitude, accuracy, heading, speed } = pos.coords;
-            statusText.textContent = '';
-            await fetch(`/api/location/${token}`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                lat: latitude,
-                lng: longitude,
-                accuracy,
-                heading,
-                speed,
-              }),
-            });
+            await sendLocation(pos);
           },
           (err) => {
-            statusText.textContent = `위치 권한 필요: ${err.message}`;
+            if (statusText) {
+              statusText.textContent = `위치 권한 필요: ${err.message}`;
+            }
           },
           {
             enableHighAccuracy: true,
@@ -57,13 +79,52 @@
             timeout: 15000,
           }
         );
+      }
 
-        stopBtn.addEventListener('click', () => {
+      // 위치 공유 중지
+      function stopSharing() {
+        if (watchId !== null) {
           navigator.geolocation.clearWatch(watchId);
+          watchId = null;
+        }
+        isSharing = false;
+        if (statusText) {
           statusText.textContent = '공유를 중지했습니다.';
+        }
+        if (stopBtn) {
           stopBtn.disabled = true;
+        }
+      }
+
+      // 페이지 로드 시 자동으로 위치 공유 시작
+      startSharing();
+
+      // 중지 버튼이 있으면 이벤트 리스너 추가
+      if (stopBtn) {
+        stopBtn.addEventListener('click', () => {
+          stopSharing();
         });
       }
+
+      // 페이지가 백그라운드에 있어도 계속 위치 공유
+      // 페이지 가시성 API로 백그라운드/포그라운드 전환 감지
+      document.addEventListener('visibilitychange', () => {
+        if (!document.hidden && !isSharing) {
+          // 페이지가 다시 보이면 위치 공유 재개
+          startSharing();
+        }
+        // 백그라운드에 있어도 watchPosition은 계속 작동함
+      });
+
+      // 페이지가 언로드되기 전에 정리
+      window.addEventListener('beforeunload', () => {
+        if (watchId !== null) {
+          navigator.geolocation.clearWatch(watchId);
+        }
+      });
+
+      // 페이지가 포커스를 잃어도 위치 공유는 계속됨
+      // (watchPosition은 브라우저가 백그라운드에서도 계속 실행함)
     </script>
   </body>
 </html>
