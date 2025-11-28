@@ -260,6 +260,7 @@ def admin_sessions():
         selected_token=selected_token,
         history=selected_history,
         max_history=MAX_HISTORY,
+        max_session_lifetime_hours=MAX_SESSION_LIFETIME_HOURS,
     )
 
 
