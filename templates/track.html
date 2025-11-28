@@ -11,6 +11,9 @@
       <p class="badge">LIVE</p>
       <h1>실시간 위치 조회 중</h1>
       <p>이 페이지를 닫으면 조회가 중단됩니다.</p>
+      <p style="margin-top: 0.5rem; font-size: 0.9em; opacity: 0.9;">
+        세션 만료 시간: {{ max_session_lifetime_hours }}시간 ({{ (max_session_lifetime_hours / 24) | round(1) }}일)
+      </p>
     </header>
 
     <main class="card card--mobile">
@@ -100,4 +103,3 @@
     </script>
   </body>
 </html>
-
