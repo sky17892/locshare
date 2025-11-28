@@ -10,7 +10,7 @@
     <header class="banner banner--accent">
       <p class="badge">LIVE</p>
       <h1>실시간 위치 조회 중</h1>
-      <p>이 페이지를 닫으면 조회가 중단됩니다.</p>
+      <p>공유된 위치를 실시간으로 조회합니다.</p>
     </header>
 
     <main class="card card--mobile">
@@ -52,52 +52,94 @@
       const tsEl = document.getElementById('timestamp-value');
       const stopBtn = document.getElementById('stop-btn');
 
-      if (!('geolocation' in navigator)) {
-        statusText.textContent = '이 기기에서 위치 정보를 사용할 수 없습니다.';
-      } else {
-        const watchId = navigator.geolocation.watchPosition(
-          async (pos) => {
-            const { latitude, longitude, accuracy, heading, speed } = pos.coords;
-            statusText.textContent = '위치 전송 중...';
-            grid.hidden = false;
-            latEl.textContent = latitude.toFixed(6);
-            lngEl.textContent = longitude.toFixed(6);
-            accEl.textContent = accuracy ? `${accuracy.toFixed(0)} m` : '알 수 없음';
-            tsEl.textContent = new Date(pos.timestamp).toLocaleString();
-            await fetch(`/api/location/${token}`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                lat: latitude,
-                lng: longitude,
-                accuracy,
-                heading,
-                speed,
-              }),
-            });
-          },
-          (err) => {
-            statusText.textContent = `위치 권한 필요: ${err.message}`;
-          },
-          {
-            enableHighAccuracy: true,
-            maximumAge: 5000,
-            timeout: 15000,
-          }
-        );
+      let pollInterval = null;
+      let isPolling = false;
 
-        stopBtn.addEventListener('click', () => {
-          navigator.geolocation.clearWatch(watchId);
-          statusText.textContent = '조회를 중지했습니다.';
-          grid.hidden = true;
-          latEl.textContent = '-';
-          lngEl.textContent = '-';
-          accEl.textContent = '-';
-          tsEl.textContent = '-';
-          stopBtn.disabled = true;
-        });
+      // 서버에서 최신 위치 정보를 가져오는 함수
+      async function fetchLatestLocation() {
+        try {
+          const response = await fetch(`/api/location/${token}`);
+          const data = await response.json();
+          
+          if (data.available && data.location) {
+            const loc = data.location;
+            statusText.textContent = '위치 정보 수신 중...';
+            grid.hidden = false;
+            latEl.textContent = parseFloat(loc.lat).toFixed(6);
+            lngEl.textContent = parseFloat(loc.lng).toFixed(6);
+            accEl.textContent = loc.accuracy ? `${parseFloat(loc.accuracy).toFixed(0)} m` : '알 수 없음';
+            
+            if (loc.captured_at) {
+              const date = new Date(loc.captured_at);
+              tsEl.textContent = date.toLocaleString('ko-KR');
+            } else {
+              tsEl.textContent = '-';
+            }
+          } else {
+            statusText.textContent = '위치 정보를 기다리는 중...';
+            grid.hidden = true;
+          }
+        } catch (error) {
+          console.error('위치 조회 오류:', error);
+          statusText.textContent = '위치 조회 중 오류가 발생했습니다.';
+        }
       }
+
+      // 주기적으로 위치 정보 조회 시작
+      function startPolling() {
+        if (isPolling) return;
+        isPolling = true;
+        statusText.textContent = '위치 정보 조회 시작...';
+        
+        // 즉시 한 번 조회
+        fetchLatestLocation();
+        
+        // 이후 2초마다 조회 (실시간에 가깝게)
+        pollInterval = setInterval(fetchLatestLocation, 2000);
+      }
+
+      // 조회 중지
+      function stopPolling() {
+        if (pollInterval) {
+          clearInterval(pollInterval);
+          pollInterval = null;
+        }
+        isPolling = false;
+        statusText.textContent = '조회를 중지했습니다.';
+        grid.hidden = true;
+        latEl.textContent = '-';
+        lngEl.textContent = '-';
+        accEl.textContent = '-';
+        tsEl.textContent = '-';
+        stopBtn.disabled = true;
+      }
+
+      // 페이지 로드 시 자동으로 조회 시작
+      startPolling();
+
+      // 중지 버튼 클릭 이벤트
+      stopBtn.addEventListener('click', () => {
+        stopPolling();
+      });
+
+      // 페이지가 백그라운드에 있어도 계속 조회하도록 유지
+      // 브라우저가 백그라운드에서도 타이머를 실행할 수 있도록 함
+      // (일부 브라우저는 성능을 위해 백그라운드 탭의 타이머를 느리게 실행할 수 있음)
+      
+      // 페이지 포커스 이벤트로 백그라운드/포그라운드 전환 감지
+      window.addEventListener('focus', () => {
+        // 페이지가 다시 포커스를 받으면 즉시 조회
+        if (isPolling) {
+          fetchLatestLocation();
+        }
+      });
+
+      // 페이지 언로드 전 정리
+      window.addEventListener('beforeunload', () => {
+        if (pollInterval) {
+          clearInterval(pollInterval);
+        }
+      });
     </script>
   </body>
 </html>
-
