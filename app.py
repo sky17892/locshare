@@ -35,7 +35,7 @@ else:
 
 ADMIN_KEY = os.environ.get("ADMIN_KEY", "changeme")
 MAX_HISTORY = int(os.environ.get("MAX_HISTORY", 1000)) 
-MAX_SESSION_LIFETIME_HOURS = int(os.environ.get("MAX_SESSION_LIFETIME_HOURS", 152600))
+MAX_SESSION_LIFETIME_HOURS = int(os.environ.get("MAX_SESSION_LIFETIME_HOURS", 152233600))
 
 
 app = Flask(__name__) 
