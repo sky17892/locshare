@@ -167,7 +167,7 @@ def create_session():
 @app.get("/share/<token>")
 def share_page(token: str):
     _get_session(token)
-    return render_template("share.html", token=token)
+    return render_template("share.html", token=token, max_session_lifetime_hours=MAX_SESSION_LIFETIME_HOURS)
 
 
 @app.post("/api/location/<token>")
@@ -230,7 +230,7 @@ def latest_location(token: str):
 @app.get("/track/<token>")
 def track_page(token: str):
     _get_session(token)
-    return render_template("track.html", token=token)
+    return render_template("track.html", token=token, max_session_lifetime_hours=MAX_SESSION_LIFETIME_HOURS)
 
 
 @app.get("/admin")
