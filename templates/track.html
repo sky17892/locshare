@@ -10,16 +10,16 @@
     <header class="banner banner--accent">
       <p class="badge">LIVE</p>
       <h1>실시간 위치 조회 중</h1>
-      <p>공유된 위치를 실시간으로 조회합니다.</p>
+      <p>공유된 위치를 실시간으로 조회합니다. 상대방이 페이지를 닫아도 서버에 저장된 위치를 계속 조회합니다.</p>
     </header>
 
     <main class="card card--mobile">
-      <section class="phone-column">
+      <section class="phone-column" hidden>
         {% include "_phone_preview.html" %}
       </section>
       <section class="status">
         <div class="status-chip">토큰 {{ token }}</div>
-        <p id="status-text" class="status__text">대기 중...</p>
+        <p id="status-text" class="status__text">위치 정보 조회 중...</p>
         <dl class="location-grid" id="location-grid" hidden>
           <div>
             <dt>위도</dt>
@@ -34,7 +34,15 @@
             <dd id="accuracy-value">-</dd>
           </div>
           <div>
-            <dt>업데이트</dt>
+            <dt>방향</dt>
+            <dd id="heading-value">-</dd>
+          </div>
+          <div>
+            <dt>속도</dt>
+            <dd id="speed-value">-</dd>
+          </div>
+          <div>
+            <dt>마지막 업데이트</dt>
             <dd id="timestamp-value">-</dd>
           </div>
         </dl>
@@ -49,11 +57,14 @@
       const latEl = document.getElementById('lat-value');
       const lngEl = document.getElementById('lng-value');
       const accEl = document.getElementById('accuracy-value');
+      const headingEl = document.getElementById('heading-value');
+      const speedEl = document.getElementById('speed-value');
       const tsEl = document.getElementById('timestamp-value');
       const stopBtn = document.getElementById('stop-btn');
 
       let pollInterval = null;
       let isPolling = false;
+      let lastUpdateTime = null;
 
       // 서버에서 최신 위치 정보를 가져오는 함수
       async function fetchLatestLocation() {
@@ -63,25 +74,63 @@
           
           if (data.available && data.location) {
             const loc = data.location;
-            statusText.textContent = '위치 정보 수신 중...';
-            grid.hidden = false;
-            latEl.textContent = parseFloat(loc.lat).toFixed(6);
-            lngEl.textContent = parseFloat(loc.lng).toFixed(6);
-            accEl.textContent = loc.accuracy ? `${parseFloat(loc.accuracy).toFixed(0)} m` : '알 수 없음';
             
-            if (loc.captured_at) {
-              const date = new Date(loc.captured_at);
-              tsEl.textContent = date.toLocaleString('ko-KR');
+            // 위치 정보가 업데이트되었는지 확인
+            const currentUpdateTime = loc.captured_at;
+            if (currentUpdateTime !== lastUpdateTime) {
+              lastUpdateTime = currentUpdateTime;
+              
+              statusText.textContent = '위치 정보 수신 중...';
+              grid.hidden = false;
+              latEl.textContent = parseFloat(loc.lat).toFixed(6);
+              lngEl.textContent = parseFloat(loc.lng).toFixed(6);
+              accEl.textContent = loc.accuracy ? `${parseFloat(loc.accuracy).toFixed(0)} m` : '알 수 없음';
+              
+              // 방향 정보 표시
+              if (loc.heading !== null && loc.heading !== undefined) {
+                headingEl.textContent = `${parseFloat(loc.heading).toFixed(1)}°`;
+              } else {
+                headingEl.textContent = '알 수 없음';
+              }
+              
+              // 속도 정보 표시 (m/s를 km/h로 변환)
+              if (loc.speed !== null && loc.speed !== undefined) {
+                const speedKmh = parseFloat(loc.speed) * 3.6;
+                speedEl.textContent = `${speedKmh.toFixed(1)} km/h`;
+              } else {
+                speedEl.textContent = '알 수 없음';
+              }
+              
+              // 마지막 업데이트 시간 표시
+              if (loc.captured_at) {
+                const date = new Date(loc.captured_at);
+                const now = new Date();
+                const diffSeconds = Math.floor((now - date) / 1000);
+                
+                if (diffSeconds < 60) {
+                  tsEl.textContent = `방금 전 (${date.toLocaleString('ko-KR')})`;
+                } else if (diffSeconds < 3600) {
+                  const minutes = Math.floor(diffSeconds / 60);
+                  tsEl.textContent = `${minutes}분 전 (${date.toLocaleString('ko-KR')})`;
+                } else {
+                  tsEl.textContent = date.toLocaleString('ko-KR');
+                }
+              } else {
+                tsEl.textContent = '-';
+              }
             } else {
-              tsEl.textContent = '-';
+              // 위치 정보는 있지만 업데이트되지 않음 (이미 표시된 정보)
+              statusText.textContent = '위치 정보 조회 중... (변경 없음)';
             }
           } else {
-            statusText.textContent = '위치 정보를 기다리는 중...';
+            statusText.textContent = '위치 정보를 기다리는 중... (상대방이 위치를 공유하면 표시됩니다)';
             grid.hidden = true;
           }
         } catch (error) {
           console.error('위치 조회 오류:', error);
-          statusText.textContent = '위치 조회 중 오류가 발생했습니다.';
+          statusText.textContent = '위치 조회 중 오류가 발생했습니다. 다시 시도 중...';
+          // 오류 발생 시 5초 후 다시 시도
+          setTimeout(fetchLatestLocation, 5000);
         }
       }
 
@@ -95,6 +144,7 @@
         fetchLatestLocation();
         
         // 이후 2초마다 조회 (실시간에 가깝게)
+        // 상대방이 페이지를 닫아도 서버에 저장된 위치를 계속 조회합니다
         pollInterval = setInterval(fetchLatestLocation, 2000);
       }
 
@@ -110,6 +160,8 @@
         latEl.textContent = '-';
         lngEl.textContent = '-';
         accEl.textContent = '-';
+        headingEl.textContent = '-';
+        speedEl.textContent = '-';
         tsEl.textContent = '-';
         stopBtn.disabled = true;
       }
