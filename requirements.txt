@@ -3,3 +3,4 @@ pymysql
 sqlalchemy
 python-dotenv
 APScheduler
+Flask-SQLAlchemy
