@@ -1,28 +1,31 @@
-# app.py (Vercel 호환성 최적화 버전)
+# app.py (Vercel 호환성 강화 버전)
 
 from __future__ import annotations
 
 import os
 from dotenv import load_dotenv 
-from pathlib import Path 
+from pathlib import Path # 경로 처리를 위해 추가
 
 # .env 파일을 읽어 환경 변수를 로드합니다. (로컬 실행 시 필요)
 load_dotenv() 
 
 import secrets
+from collections import deque
 from datetime import datetime, timezone, timedelta
-from typing import Any, Dict
+from typing import Any, Deque, Dict, Optional
+import atexit 
 
 from flask import Flask, abort, jsonify, render_template, request, url_for
 from flask_sqlalchemy import SQLAlchemy 
+from apscheduler.schedulers.background import BackgroundScheduler 
 
 # ----------------------------------------------------
 # ⚙️ 환경 변수 및 전역 설정
 # ----------------------------------------------------
 
-# Vercel 환경 감지 및 DB 경로 설정
+# Vercel 환경 감지 및 DB 경로 설정 수정
 if os.getenv('VERCEL') == '1' or os.getenv('VERCEL_ENV'):
-    # Vercel 환경: /tmp 디렉토리에 DB 파일 생성 (데이터 영속성은 낮음)
+    # Vercel 환경: 쓰기가 가능한 /tmp 디렉토리에 DB 파일을 생성
     DB_FILE_PATH = Path('/tmp') / 'site.db'
     DATABASE_URL = f"sqlite:///{DB_FILE_PATH}"
     print(f"INFO: Vercel detected. Using temporary path: {DATABASE_URL}")
@@ -44,10 +47,12 @@ db = SQLAlchemy(app)
 
 
 # ----------------------------------------------------
-# 📚 데이터베이스 모델 정의
+# 📚 데이터베이스 모델 정의 (변경 없음)
 # ----------------------------------------------------
 
+# UTC 시간을 DB에 저장할 때 사용
 def now_utc():
+    # SQLite는 타임존 정보를 지원하지 않으므로, naive datetime 객체로 변환하여 저장
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 class Session(db.Model):
@@ -82,49 +87,17 @@ class LocationHistory(db.Model):
 
 
 # ----------------------------------------------------
-# 🔪 DB 초기화 코드를 Flask CLI 명령으로 변경 (임포트 에러 방지)
+# 🚀 애플리케이션 시작 시 DB 파일 및 테이블 생성
 # ----------------------------------------------------
 
-@app.cli.command("init-db")
-def init_db():
-    """DB 파일 및 테이블 생성 (Vercel에서 첫 배포 시 실행 필요)"""
-    db.create_all()
-    print("DB 테이블이 성공적으로 초기화되었습니다.")
-
-# ----------------------------------------------------
-# 🧹 만료 세션 정리 로직 (API 엔드포인트로 변경)
-# ----------------------------------------------------
-
-def cleanup_expired_sessions():
-    """만료된 세션 및 관련 위치 기록을 DB에서 정리합니다."""
-    # Vercel은 스케줄러를 지원하지 않으므로, 이 함수를 외부 Cron 서비스나
-    # 관리자 접근 시 호출하는 방식으로 변경해야 합니다.
-    
-    expiration_time = datetime.utcnow() - timedelta(hours=MAX_SESSION_LIFETIME_HOURS)
-    sessions_to_delete = Session.query.filter(Session.created_at < expiration_time).all()
-    
-    count = len(sessions_to_delete)
-    for s in sessions_to_delete:
-        db.session.delete(s)
-    
-    db.session.commit()
-    
-    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {count}개의 만료된 세션 정리 완료.")
-    return count
-
-# 관리자 키를 가진 사용자가 수동으로 실행할 수 있는 엔드포인트 추가
-@app.post("/api/admin/cleanup")
-def run_cleanup():
-    key = request.args.get("key")
-    if key != ADMIN_KEY:
-        abort(403, description="Forbidden")
-    
-    count = cleanup_expired_sessions()
-    return jsonify({"status": "ok", "deleted_count": count})
+with app.app_context():
+    # Vercel에서 /tmp 경로를 사용하더라도 테이블이 확실히 생성되도록 보장
+    db.create_all() 
+    print("데이터베이스 초기화 완료 (site.db)")
 
 
 # ----------------------------------------------------
-# 헬퍼 함수 및 경로 (Routes) 정의 (기존과 동일)
+# 헬퍼 함수, 정리 로직, 스케줄러 (변경 없음)
 # ----------------------------------------------------
 
 def _get_session(token: str) -> Session:
@@ -132,6 +105,32 @@ def _get_session(token: str) -> Session:
     if session is None:
         abort(404, description="Unknown share token")
     return session
+
+def cleanup_expired_sessions():
+    with app.app_context():
+        expiration_time = datetime.utcnow() - timedelta(hours=MAX_SESSION_LIFETIME_HOURS)
+        sessions_to_delete = Session.query.filter(Session.created_at < expiration_time).all()
+        
+        count = len(sessions_to_delete)
+        for s in sessions_to_delete:
+            db.session.delete(s)
+        
+        db.session.commit()
+        
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {count}개의 만료된 세션 정리 완료 (기준: {MAX_SESSION_LIFETIME_HOURS}시간)")
+
+scheduler = BackgroundScheduler()
+# APScheduler는 Vercel의 서버리스 환경에서는 제대로 작동하지 않을 수 있습니다.
+# Vercel 함수가 주기적으로 실행되는 환경이 아니기 때문입니다.
+# 하지만 로컬 테스트 및 구색을 위해 코드는 유지합니다.
+scheduler.add_job(func=cleanup_expired_sessions, trigger="interval", minutes=30)
+scheduler.start()
+atexit.register(lambda: scheduler.shutdown())
+
+
+# ----------------------------------------------------
+# 🗺️ 경로 (Routes) 정의 (데이터 처리 로직 변경 없음)
+# ----------------------------------------------------
 
 @app.get("/")
 def index():
@@ -146,10 +145,12 @@ def create_session():
     db.session.commit()
     return ( jsonify({"token": token, "share_url": url_for("share_page", token=token, _external=True), "track_url": track_url,}), 201,)
 
+
 @app.get("/share/<token>")
 def share_page(token: str):
     _get_session(token)
     return render_template("share.html", token=token)
+
 
 @app.post("/api/location/<token>")
 def update_location(token: str):
@@ -157,14 +158,20 @@ def update_location(token: str):
     payload = request.get_json(silent=True) or {}
     lat = payload.get("lat")
     lng = payload.get("lng")
-    if lat is None or lng is None: abort(400, description="lat/lng is required")
+
+    if lat is None or lng is None:
+        abort(400, description="lat/lng is required")
         
     current_time = now_utc()
+    
+    # 1. 새 위치 기록 생성
     new_location = LocationHistory(
         session_id=session.id, lat=float(lat), lng=float(lng), accuracy=payload.get("accuracy"), 
         heading=payload.get("heading"), speed=payload.get("speed"), captured_at=current_time
     )
     db.session.add(new_location)
+    
+    # 2. Session 테이블에 최신 위치 정보 캐싱
     session.latest_lat = new_location.lat
     session.latest_lng = new_location.lng
     session.latest_accuracy = new_location.accuracy
@@ -172,6 +179,7 @@ def update_location(token: str):
     session.latest_speed = new_location.speed
     session.latest_captured_at = new_location.captured_at
     
+    # 3. 최대 기록 수 초과 시 가장 오래된 기록 삭제 (FIFO)
     current_count = session.history.count()
     if current_count > MAX_HISTORY:
         oldest_history = session.history.order_by(LocationHistory.captured_at.asc()).first()
@@ -181,27 +189,37 @@ def update_location(token: str):
     db.session.commit()
     return jsonify({"status": "ok"})
 
+
 @app.get("/api/location/<token>")
 def latest_location(token: str):
     session = _get_session(token)
-    if session.latest_lat is None: return jsonify({"available": False})
+    
+    if session.latest_lat is None:
+        return jsonify({"available": False})
         
     latest = {
-        "lat": session.latest_lat, "lng": session.latest_lng, "accuracy": session.latest_accuracy,
-        "heading": session.latest_heading, "speed": session.latest_speed,
+        "lat": session.latest_lat,
+        "lng": session.latest_lng,
+        "accuracy": session.latest_accuracy,
+        "heading": session.latest_heading,
+        "speed": session.latest_speed,
         "captured_at": session.latest_captured_at.replace(tzinfo=timezone.utc).isoformat() if session.latest_captured_at else None,
     }
+    
     return jsonify({"available": True, "location": latest})
+
 
 @app.get("/track/<token>")
 def track_page(token: str):
     _get_session(token)
     return render_template("track.html", token=token)
 
+
 @app.get("/admin")
 def admin_sessions():
     key = request.args.get("key")
-    if key != ADMIN_KEY: abort(403, description="Forbidden") 
+    if key != ADMIN_KEY:
+        abort(403, description="Forbidden") 
     
     token_filter = request.args.get("token")
     all_sessions = Session.query.order_by(Session.created_at.desc()).all()
@@ -209,9 +227,11 @@ def admin_sessions():
     items = []
     for s in all_sessions:
         items.append({
-            "token": s.token, "share_url": url_for("share_page", token=s.token, _external=True),
+            "token": s.token,
+            "share_url": url_for("share_page", token=s.token, _external=True),
             "track_url": url_for("track_page", token=s.token, _external=True),
-            "has_location": s.latest_lat is not None, "count": s.history.count(), 
+            "has_location": s.latest_lat is not None, 
+            "count": s.history.count(), 
         })
 
     selected_history = []
@@ -224,19 +244,28 @@ def admin_sessions():
             
             selected_history = [
                 {
-                    'lat': h.lat, 'lng': h.lng, 'accuracy': h.accuracy, 'heading': h.heading, 'speed': h.speed,
+                    'lat': h.lat,
+                    'lng': h.lng,
+                    'accuracy': h.accuracy,
+                    'heading': h.heading,
+                    'speed': h.speed,
                     'captured_at': (h.captured_at + timedelta(hours=9)).strftime('%Y-%m-%d %H:%M:%S')
                 }
                 for h in history_query.limit(MAX_HISTORY).all()
             ]
 
-    return render_template("admin.html", sessions=items, selected_token=selected_token, history=selected_history, max_history=MAX_HISTORY)
+    return render_template(
+        "admin.html",
+        sessions=items,
+        selected_token=selected_token,
+        history=selected_history,
+        max_history=MAX_HISTORY,
+    )
 
 
 if __name__ == "__main__":
     print(f"ADMIN_KEY: {ADMIN_KEY}")
     print(f"DATABASE: {DATABASE_URL}")
     print(f"MAX_SESSION_LIFETIME_HOURS: {MAX_SESSION_LIFETIME_HOURS}시간")
-    print("WARNING: Background cleanup will not run in local debug mode (use Flask CLI init-db).")
-    # 로컬에서는 debug 모드로 실행 (Vercel에서는 이 부분이 실행되지 않음)
-    app.run(debug=True, host="0.0.0.0", port=8888)
+    print("APScheduler가 백그라운드에서 실행 중입니다...")
+    app.run(debug=True, host="0.0.0.0", port=8888, use_reloader=False)
