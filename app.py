@@ -211,8 +211,42 @@ def latest_location(token: str):
 
 @app.get("/track/<token>")
 def track_page(token: str):
-    _get_session(token)
-    return render_template("track.html", token=token)
+    session = _get_session(token)
+    # 세션 정보를 템플릿에 전달
+    session_info = {
+        "token": session.token,
+        "created_at": (session.created_at + timedelta(hours=9)).strftime('%Y-%m-%d %H:%M:%S') if session.created_at else None,
+        "has_location": session.latest_lat is not None,
+        "count": session.history.count(),
+        "max_history": MAX_HISTORY,
+    }
+    return render_template("track.html", token=token, session_info=session_info)
+
+@app.get("/api/session/<token>/history")
+def get_session_history(token: str):
+    """세션 기록을 가져오는 API"""
+    session = _get_session(token)
+    history_query = session.history.order_by(LocationHistory.captured_at.desc())
+    
+    history = [
+        {
+            'lat': h.lat,
+            'lng': h.lng,
+            'accuracy': h.accuracy,
+            'heading': h.heading,
+            'speed': h.speed,
+            'captured_at': (h.captured_at + timedelta(hours=9)).strftime('%Y-%m-%d %H:%M:%S') if h.captured_at else None
+        }
+        for h in history_query.limit(MAX_HISTORY).all()
+    ]
+    
+    return jsonify({
+        "token": session.token,
+        "created_at": session.created_at.isoformat() if session.created_at else None,
+        "has_location": session.latest_lat is not None,
+        "count": len(history),
+        "history": history
+    })
 
 
 @app.get("/admin")
