@@ -21,14 +21,18 @@ load_dotenv()
 # ----------------------------------------------------
 
 # PHP 파일에서 가져온 MySQL DB 정보
-MYSQL_HOST = 'sky16015.dothome.co.kr:3306'
+# 🚨 수정: 포트 번호(:3306)를 제거하고 호스트 주소만 남겼습니다.
+MYSQL_HOST = 'sky16015.dothome.co.kr'
 MYSQL_USER = 'sky16015'
 MYSQL_PASSWORD = 'sky02564!'
 MYSQL_DB = 'sky16015'
 
 # Flask-SQLAlchemy용 MySQL 연결 URL 생성 (PyMySQL 드라이버 사용)
-# 형식: mysql+pymysql://<user>:<password>@<host>/<dbname>
-FALLBACK_DATABASE_URL = f"mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD}@{MYSQL_HOST}/{MYSQL_DB}"
+# 형식: mysql+pymysql://<user>:<password>@<host>/<dbname>?charset=utf8mb4
+# 🚨 수정: 인코딩 오류 방지를 위해 '?charset=utf8mb4'를 다시 추가했습니다.
+FALLBACK_DATABASE_URL = (
+    f"mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD}@{MYSQL_HOST}/{MYSQL_DB}?charset=utf8mb4"
+)
 
 # Vercel 환경 변수 'DATABASE_URL'을 우선 사용하고, 없으면 위 MySQL 정보를 사용합니다.
 DATABASE_URL = os.environ.get("DATABASE_URL", FALLBACK_DATABASE_URL)
@@ -50,11 +54,10 @@ app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URL
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-# MySQL 연결 시 인코딩 및 연결 끊김 방지 설정 추가
+# MySQL 연결 시 인코딩 및 연결 끊김 방지 설정 추가 (charset은 URL에 있으므로 제외)
 if DATABASE_URL.startswith("mysql"):
     app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
         'pool_recycle': 280,  # MySQL 연결 끊김 방지
-        #'charset': 'utf8mb4'
     }
 
 db = SQLAlchemy(app) 
