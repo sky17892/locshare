@@ -232,6 +232,27 @@ def get_session_history(token: str):
         "history": history
     })
 
+@app.get("/api/admin/sessions")
+def get_admin_sessions():
+    key = request.args.get("key")
+    if key != ADMIN_KEY:
+        abort(403)
+
+    all_sessions = Session.query.order_by(Session.created_at.desc()).all()
+
+    items = [
+        {
+            "token": s.token,
+            "share_url": url_for("share_page", token=s.token, _external=True),
+            "track_url": url_for("track_page", token=s.token, _external=True),
+            "has_location": s.latest_lat is not None,
+            "count": s.history.count(),
+        }
+        for s in all_sessions
+    ]
+
+    return jsonify({"sessions": items})
+
 @app.get("/admin")
 def admin_sessions():
     key = request.args.get("key")
@@ -278,6 +299,7 @@ def admin_sessions():
         history=selected_history,
         max_history=MAX_HISTORY,
         max_session_lifetime_hours=MAX_SESSION_LIFETIME_HOURS,
+        admin_key=key,
     )
 
 if __name__ == "__main__":
