@@ -1,8 +1,14 @@
+# app.py (Vercel 호환성 강화 버전)
+
 from __future__ import annotations
 
 import os
 from dotenv import load_dotenv 
-from pathlib import Path 
+from pathlib import Path # 경로 처리를 위해 추가
+
+# .env 파일을 읽어 환경 변수를 로드합니다. (로컬 실행 시 필요)
+load_dotenv() 
+
 import secrets
 from collections import deque
 from datetime import datetime, timezone, timedelta
@@ -11,34 +17,25 @@ import atexit
 
 from flask import Flask, abort, jsonify, render_template, request, url_for
 from flask_sqlalchemy import SQLAlchemy 
-# APScheduler는 세션 정리 로직 제거로 인해 제거합니다.
-# from apscheduler.schedulers.background import BackgroundScheduler 
-
-# .env 파일을 읽어 환경 변수를 로드합니다. (로컬 실행 시 필요)
-load_dotenv() 
+from apscheduler.schedulers.background import BackgroundScheduler 
 
 # ----------------------------------------------------
-# ⚙️ 환경 변수 및 전역 설정 (SQLite 연동 부분)
+# ⚙️ 환경 변수 및 전역 설정
 # ----------------------------------------------------
+
+# Vercel 환경 감지 및 DB 경로 설정 수정
+if os.getenv('VERCEL') == '1' or os.getenv('VERCEL_ENV'):
+    # Vercel 환경: 쓰기가 가능한 /tmp 디렉토리에 DB 파일을 생성
+    DB_FILE_PATH = Path('/tmp') / 'site.db'
+    DATABASE_URL = f"sqlite:///{DB_FILE_PATH}"
+    print(f"INFO: Vercel detected. Using temporary path: {DATABASE_URL}")
+else:
+    # 로컬 환경: .env 또는 기본 경로 사용
+    DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///site.db")
 
 ADMIN_KEY = os.environ.get("ADMIN_KEY", "changeme")
-MAX_HISTORY = int(os.environ.get("MAX_HISTORY", 1500)) 
-
-# 🚨 **수정된 핵심 로직:** Vercel 환경에서 쓰기 가능한 경로로 분기 처리
-if os.getenv('VERCEL') == '1' or os.getenv('VERCEL_ENV'):
-    # Vercel: 쓰기가 허용된 /tmp 디렉토리에 저장 (휘발성 데이터!)
-    SQLITE_DB_PATH = "/tmp/database.db"
-    print(f"INFO: Vercel detected. Using volatile SQLite database at {SQLITE_DB_PATH}")
-else:
-    # 로컬: 현재 디렉토리에 저장 (영구 저장)
-    SQLITE_DB_PATH = Path(__file__).parent / "database.db"
-    print(f"INFO: Local environment. Using SQLite database at {SQLITE_DB_PATH}")
-
-# Flask-SQLAlchemy용 SQLite 연결 URL 생성
-FALLBACK_DATABASE_URL = f"sqlite:///{SQLITE_DB_PATH}"
-
-# Vercel 환경 변수 'DATABASE_URL'을 우선 사용하고, 없으면 위 SQLite 정보를 사용합니다.
-DATABASE_URL = os.environ.get("DATABASE_URL", FALLBACK_DATABASE_URL)
+MAX_HISTORY = int(os.environ.get("MAX_HISTORY", 1000)) 
+MAX_SESSION_LIFETIME_HOURS = int(os.environ.get("MAX_SESSION_LIFETIME_HOURS", 8760000))  # 기본값: 1000년 (365일 * 1000년 = 365000일 = 8760000시간)
 
 
 app = Flask(__name__) 
@@ -46,17 +43,16 @@ app = Flask(__name__)
 # DB 설정
 app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URL
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-
 db = SQLAlchemy(app) 
 
 
 # ----------------------------------------------------
-# 📚 데이터베이스 모델 정의 
+# 📚 데이터베이스 모델 정의 (변경 없음)
 # ----------------------------------------------------
 
 # UTC 시간을 DB에 저장할 때 사용
 def now_utc():
-    # 타임존 정보가 없는 naive datetime 객체로 저장
+    # SQLite는 타임존 정보를 지원하지 않으므로, naive datetime 객체로 변환하여 저장
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 class Session(db.Model):
@@ -95,14 +91,13 @@ class LocationHistory(db.Model):
 # ----------------------------------------------------
 
 with app.app_context():
-    # 데이터베이스 파일이 없으면 생성되도록 보장
-    # Vercel 환경에서는 /tmp/database.db를 생성합니다.
+    # Vercel에서 /tmp 경로를 사용하더라도 테이블이 확실히 생성되도록 보장
     db.create_all() 
-    print(f"데이터베이스 초기화 완료 (DB Type: {'MySQL' if DATABASE_URL.startswith('mysql') else 'SQLite'})")
+    print("데이터베이스 초기화 완료 (site.db)")
 
 
 # ----------------------------------------------------
-# 헬퍼 함수, 정리 로직 (세션 시간 제한 제거됨)
+# 헬퍼 함수, 정리 로직, 스케줄러 (변경 없음)
 # ----------------------------------------------------
 
 def _get_session(token: str) -> Session:
@@ -111,9 +106,30 @@ def _get_session(token: str) -> Session:
         abort(404, description="Unknown share token")
     return session
 
+def cleanup_expired_sessions():
+    with app.app_context():
+        expiration_time = datetime.utcnow() - timedelta(hours=MAX_SESSION_LIFETIME_HOURS)
+        sessions_to_delete = Session.query.filter(Session.created_at < expiration_time).all()
+        
+        count = len(sessions_to_delete)
+        for s in sessions_to_delete:
+            db.session.delete(s)
+        
+        db.session.commit()
+        
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {count}개의 만료된 세션 정리 완료 (기준: {MAX_SESSION_LIFETIME_HOURS}시간)")
+
+scheduler = BackgroundScheduler()
+# APScheduler는 Vercel의 서버리스 환경에서는 제대로 작동하지 않을 수 있습니다.
+# Vercel 함수가 주기적으로 실행되는 환경이 아니기 때문입니다.
+# 하지만 로컬 테스트 및 구색을 위해 코드는 유지합니다.
+scheduler.add_job(func=cleanup_expired_sessions, trigger="interval", minutes=30)
+scheduler.start()
+atexit.register(lambda: scheduler.shutdown())
+
 
 # ----------------------------------------------------
-# 🗺️ 경로 (Routes) 정의 
+# 🗺️ 경로 (Routes) 정의 (데이터 처리 로직 변경 없음)
 # ----------------------------------------------------
 
 @app.get("/")
@@ -199,7 +215,6 @@ def track_page(token: str):
     # 세션 정보를 템플릿에 전달
     session_info = {
         "token": session.token,
-        # DB의 UTC 시간에 한국 시간(KST, UTC+9)을 적용하여 출력
         "created_at": (session.created_at + timedelta(hours=9)).strftime('%Y-%m-%d %H:%M:%S') if session.created_at else None,
         "has_location": session.latest_lat is not None,
         "count": session.history.count(),
@@ -220,7 +235,6 @@ def get_session_history(token: str):
             'accuracy': h.accuracy,
             'heading': h.heading,
             'speed': h.speed,
-            # DB의 UTC 시간에 한국 시간(KST, UTC+9)을 적용하여 출력
             'captured_at': (h.captured_at + timedelta(hours=9)).strftime('%Y-%m-%d %H:%M:%S') if h.captured_at else None
         }
         for h in history_query.limit(MAX_HISTORY).all()
@@ -269,7 +283,6 @@ def admin_sessions():
                     'accuracy': h.accuracy,
                     'heading': h.heading,
                     'speed': h.speed,
-                    # DB의 UTC 시간에 한국 시간(KST, UTC+9)을 적용하여 출력
                     'captured_at': (h.captured_at + timedelta(hours=9)).strftime('%Y-%m-%d %H:%M:%S')
                 }
                 for h in history_query.limit(MAX_HISTORY).all()
@@ -281,13 +294,13 @@ def admin_sessions():
         selected_token=selected_token,
         history=selected_history,
         max_history=MAX_HISTORY,
-        max_session_lifetime_hours="무제한", # 세션 정리 로직 제거 반영
+        max_session_lifetime_hours=MAX_SESSION_LIFETIME_HOURS,
     )
 
 
 if __name__ == "__main__":
     print(f"ADMIN_KEY: {ADMIN_KEY}")
     print(f"DATABASE: {DATABASE_URL}")
-    print(f"MAX_SESSION_LIFETIME_HOURS: 무제한 (정리 로직 제거)")
-    print("APScheduler가 실행되지 않습니다 (세션 정리 로직 제거).")
+    print(f"MAX_SESSION_LIFETIME_HOURS: {MAX_SESSION_LIFETIME_HOURS}시간")
+    print("APScheduler가 백그라운드에서 실행 중입니다...")
     app.run(debug=True, host="0.0.0.0", port=8888, use_reloader=False)
