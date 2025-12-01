@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 from pathlib import Path 
 import secrets
 from datetime import datetime, timezone, timedelta
-from typing import Any, Deque, Dict, Optional
+from typing import Any, Dict, Optional
 
 from flask import Flask, abort, jsonify, render_template, request, url_for
 from flask_sqlalchemy import SQLAlchemy 
@@ -14,25 +14,21 @@ from flask_sqlalchemy import SQLAlchemy
 load_dotenv() 
 
 # ----------------------------------------------------
-# ⚙️ 환경 변수 및 전역 설정 (Postgres 사용 가정)
+# ⚙️ 환경 변수 및 전역 설정 (외부 DB 사용)
 # ----------------------------------------------------
 
-# 💡 Vercel 환경 변수 'DATABASE_URL' 사용을 강제합니다.
-# 로컬 테스트 시에는 .env 파일에 Postgres 연결 문자열을 설정해야 합니다.
-# 예: DATABASE_URL="postgresql://user:password@host:port/dbname"
+# 💡 Vercel 환경 변수 'DATABASE_URL'에서 MySQL 연결 문자열을 읽어옵니다.
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
 if not DATABASE_URL:
-    print("🚨 오류: DATABASE_URL 환경 변수가 설정되지 않았습니다. Postgres 연결이 필요합니다.")
-    # 임시로 더미 SQLite를 사용하지만, Vercel에서는 여전히 데이터가 휘발성입니다.
-    # 운영 환경에서는 반드시 Postgres URL을 설정해야 합니다.
-    FALLBACK_DB_PATH = Path(__file__).parent / "site.db"
+    # DATABASE_URL이 설정되지 않은 경우, 로컬 테스트를 위한 대체 경로 사용
+    print("🚨 [WARNING] DATABASE_URL 환경 변수가 설정되지 않아 로컬 SQLite 대체 경로를 사용합니다.")
+    # 로컬 환경에서만 쓰기 가능한 경로 사용
+    FALLBACK_DB_PATH = Path(__file__).parent / "local_fallback.db"
     DATABASE_URL = f"sqlite:///{FALLBACK_DB_PATH}"
 
 ADMIN_KEY = os.environ.get("ADMIN_KEY", "changeme")
 MAX_HISTORY = int(os.environ.get("MAX_HISTORY", 1000)) 
-
-# MAX_SESSION_LIFETIME_HOURS 변수는 정리 로직이 제거되었으므로 더 이상 사용되지 않습니다.
 
 
 app = Flask(__name__) 
@@ -41,15 +37,11 @@ app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URL
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-# 💡 Postgres 사용 시 연결 관련 설정 (선택적)
-# Vercel Postgres의 경우 대부분 기본 설정으로 충분합니다.
-# if DATABASE_URL.startswith("postgresql"):
-#     app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
-#         'pool_size': 5,          # 커넥션 풀 크기
-#         'max_overflow': 10,      # 최대 오버플로우
-#         'pool_recycle': 3600,    # 연결 재활용 시간 (초)
-#     }
-
+# MySQL 연결 시 필요할 수 있는 추가 설정 (연결 끊김 방지)
+if DATABASE_URL.startswith("mysql"):
+    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+        'pool_recycle': 3600,  # 1시간마다 연결 재활용 (DB 서버의 타임아웃 방지)
+    }
 
 db = SQLAlchemy(app) 
 
@@ -67,14 +59,14 @@ class Session(db.Model):
     __tablename__ = 'sessions'
     id = db.Column(db.Integer, primary_key=True)
     token = db.Column(db.String(32), unique=True, nullable=False)
-    created_at = db.Column(db.DateTime, default=now_utc)
+    created_at = db.Column(db.DateTime, default=now_utc) 
     latest_lat = db.Column(db.Float)
     latest_lng = db.Column(db.Float)
     latest_accuracy = db.Column(db.Float)
     latest_heading = db.Column(db.Float)
     latest_speed = db.Column(db.Float)
     latest_captured_at = db.Column(db.DateTime) 
-    history = db.relationship('LocationHistory', backref='session', lazy='dynamic', cascade="all, delete-orphan")
+    history = db.relationship('LocationHistory', backref='session', lazy='dynamic', cascade="all, delete-orphan") 
 
     def __repr__(self):
         return f'<Session {self.token}>'
@@ -95,13 +87,14 @@ class LocationHistory(db.Model):
 
 
 # ----------------------------------------------------
-# 🚀 애플리케이션 시작 시 DB 파일 및 테이블 생성
+# 🚀 애플리케이션 시작 시 DB 테이블 생성
 # ----------------------------------------------------
 
 with app.app_context():
-    # Postgres DB에 테이블이 생성되도록 보장
+    # 연결된 DB (MySQL 또는 SQLite)에 테이블이 생성되도록 보장
     db.create_all() 
-    print(f"데이터베이스 초기화 완료 (DB Type: {'PostgreSQL' if DATABASE_URL.startswith('postgresql') else 'SQLite'})")
+    db_type = 'MySQL' if DATABASE_URL.startswith('mysql') else 'SQLite (FALLBACK)'
+    print(f"데이터베이스 초기화 완료 (DB Type: {db_type})")
 
 
 # ----------------------------------------------------
@@ -113,8 +106,6 @@ def _get_session(token: str) -> Session:
     if session is None:
         abort(404, description="Unknown share token")
     return session
-
-# 🚨 세션 정리 로직 (APScheduler)은 Vercel 환경 안정성을 위해 제거되었습니다.
 
 @app.get("/")
 def index():
@@ -281,12 +272,12 @@ def admin_sessions():
         selected_token=selected_token,
         history=selected_history,
         max_history=MAX_HISTORY,
-        max_session_lifetime_hours="무제한 (Postgres)", 
+        max_session_lifetime_hours="무제한 (외부 DB)", 
     )
 
 
 if __name__ == "__main__":
     print(f"ADMIN_KEY: {ADMIN_KEY}")
     print(f"DATABASE: {DATABASE_URL}")
-    print("APScheduler가 실행되지 않습니다.")
+    print("외부 DB를 사용하므로 APScheduler는 실행되지 않습니다.")
     app.run(debug=True, host="0.0.0.0", port=8888, use_reloader=False)
