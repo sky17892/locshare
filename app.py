@@ -11,7 +11,7 @@ import atexit
 
 from flask import Flask, abort, jsonify, render_template, request, url_for
 from flask_sqlalchemy import SQLAlchemy 
-# APScheduler는 로컬에서 만료 세션 정리용이었으므로 제거합니다.
+# apscheduler는 세션 정리 로직 제거로 인해 필요하지 않습니다.
 # from apscheduler.schedulers.background import BackgroundScheduler 
 
 # .env 파일을 읽어 환경 변수를 로드합니다. (로컬 실행 시 필요)
@@ -21,11 +21,18 @@ load_dotenv()
 # ⚙️ 환경 변수 및 전역 설정 (SQLite 연동 부분)
 # ----------------------------------------------------
 
-# SQLite 데이터베이스 파일 경로 설정
-# Vercel 환경에서는 이 파일이 /tmp 디렉토리에 생성되어야 하지만, Vercel의 파일 시스템은 휘발성입니다.
-# Vercel에서 데이터 영속성을 유지하려면 Vercel Postgres 같은 외부 DB를 사용해야 합니다.
-# 이 코드는 로컬 실행이나 Vercel에서 '임시 데이터 저장' 용도로만 사용 가능합니다.
-SQLITE_DB_PATH = Path(__file__).parent / "database.db"
+ADMIN_KEY = os.environ.get("ADMIN_KEY", "changeme")
+MAX_HISTORY = int(os.environ.get("MAX_HISTORY", 1500)) 
+
+# 🚨 수정: Vercel 환경에서 쓰기가 가능한 /tmp 디렉토리를 사용하도록 변경
+if os.getenv('VERCEL') == '1' or os.getenv('VERCEL_ENV'):
+    # Vercel: /tmp 디렉토리에 저장 (휘발성 데이터!)
+    SQLITE_DB_PATH = "/tmp/database.db"
+    print(f"INFO: Vercel detected. Using volatile SQLite database at {SQLITE_DB_PATH}")
+else:
+    # 로컬: 현재 디렉토리에 저장 (영구 저장)
+    SQLITE_DB_PATH = Path(__file__).parent / "database.db"
+    print(f"INFO: Local environment. Using SQLite database at {SQLITE_DB_PATH}")
 
 # Flask-SQLAlchemy용 SQLite 연결 URL 생성
 FALLBACK_DATABASE_URL = f"sqlite:///{SQLITE_DB_PATH}"
@@ -34,34 +41,17 @@ FALLBACK_DATABASE_URL = f"sqlite:///{SQLITE_DB_PATH}"
 DATABASE_URL = os.environ.get("DATABASE_URL", FALLBACK_DATABASE_URL)
 
 
-ADMIN_KEY = os.environ.get("ADMIN_KEY", "changeme")
-MAX_HISTORY = int(os.environ.get("MAX_HISTORY", 1500)) 
-
-# 🚨 세션 시간 제한 관련 변수와 정리 함수를 제거했습니다.
-
-# Vercel 환경 감지 및 DB 경로 출력
-if os.getenv('VERCEL') == '1' or os.getenv('VERCEL_ENV'):
-    print(f"INFO: Vercel detected. Using external database URL or SQLite (volatile storage).")
-else:
-    print(f"INFO: Local environment. Using DATABASE_URL: {DATABASE_URL}")
-
 app = Flask(__name__) 
 
 # DB 설정
 app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URL
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-# MySQL 관련 설정 제거 (SQLite는 필요 없음)
-# if DATABASE_URL.startswith("mysql"):
-#    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
-#        'pool_recycle': 280, 
-#    }
-
 db = SQLAlchemy(app) 
 
 
 # ----------------------------------------------------
-# 📚 데이터베이스 모델 정의 (변경 없음)
+# 📚 데이터베이스 모델 정의
 # ----------------------------------------------------
 
 # UTC 시간을 DB에 저장할 때 사용
@@ -120,19 +110,11 @@ def _get_session(token: str) -> Session:
         abort(404, description="Unknown share token")
     return session
 
-# 🚨 만료 세션 정리 함수를 제거했습니다. 세션은 이제 만료되지 않습니다.
-# def cleanup_expired_sessions():
-#     ...
-
-# 🚨 스케줄러와 종료 로직도 제거했습니다.
-# scheduler = BackgroundScheduler()
-# scheduler.add_job(func=cleanup_expired_sessions, trigger="interval", minutes=30)
-# scheduler.start()
-# atexit.register(lambda: scheduler.shutdown())
+# 🚨 만료 세션 정리 함수와 스케줄러는 제거되었습니다.
 
 
 # ----------------------------------------------------
-# 🗺️ 경로 (Routes) 정의 (변경 없음)
+# 🗺️ 경로 (Routes) 정의
 # ----------------------------------------------------
 
 @app.get("/")
@@ -308,5 +290,5 @@ if __name__ == "__main__":
     print(f"ADMIN_KEY: {ADMIN_KEY}")
     print(f"DATABASE: {DATABASE_URL}")
     print(f"MAX_SESSION_LIFETIME_HOURS: 무제한 (정리 로직 제거)")
-    print("APScheduler가 실행되지 않습니다 (세션 정리 로직 제거).")
+    # 로컬 실행 시 Vercel 환경이 아니므로 로컬 DB 파일을 사용합니다.
     app.run(debug=True, host="0.0.0.0", port=8888, use_reloader=False)
