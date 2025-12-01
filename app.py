@@ -21,7 +21,7 @@ load_dotenv()
 # ----------------------------------------------------
 
 # PHP 파일에서 가져온 MySQL DB 정보
-MYSQL_HOST = 'localhost'
+MYSQL_HOST = 'sky16015.dothome.co.kr'
 MYSQL_USER = 'sky16015'
 MYSQL_PASSWORD = 'sky02564!'
 MYSQL_DB = 'sky16015'
