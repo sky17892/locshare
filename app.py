@@ -54,7 +54,7 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 if DATABASE_URL.startswith("mysql"):
     app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
         'pool_recycle': 280,  # MySQL 연결 끊김 방지
-        'charset': 'utf8mb4'
+        #'charset': 'utf8mb4'
     }
 
 db = SQLAlchemy(app) 
