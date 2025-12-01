@@ -1,41 +1,38 @@
-# app.py (Vercel 호환성 강화 버전)
-
 from __future__ import annotations
 
 import os
 from dotenv import load_dotenv 
-from pathlib import Path # 경로 처리를 위해 추가
+from pathlib import Path 
+import secrets
+from datetime import datetime, timezone, timedelta
+from typing import Any, Deque, Dict, Optional
+
+from flask import Flask, abort, jsonify, render_template, request, url_for
+from flask_sqlalchemy import SQLAlchemy 
 
 # .env 파일을 읽어 환경 변수를 로드합니다. (로컬 실행 시 필요)
 load_dotenv() 
 
-import secrets
-from collections import deque
-from datetime import datetime, timezone, timedelta
-from typing import Any, Deque, Dict, Optional
-import atexit 
-
-from flask import Flask, abort, jsonify, render_template, request, url_for
-from flask_sqlalchemy import SQLAlchemy 
-from apscheduler.schedulers.background import BackgroundScheduler 
-
 # ----------------------------------------------------
-# ⚙️ 환경 변수 및 전역 설정
+# ⚙️ 환경 변수 및 전역 설정 (Postgres 사용 가정)
 # ----------------------------------------------------
 
-# Vercel 환경 감지 및 DB 경로 설정 수정
-if os.getenv('VERCEL') == '1' or os.getenv('VERCEL_ENV'):
-    # Vercel 환경: 쓰기가 가능한 /tmp 디렉토리에 DB 파일을 생성
-    DB_FILE_PATH = Path('/tmp') / 'site.db'
-    DATABASE_URL = f"sqlite:///{DB_FILE_PATH}"
-    print(f"INFO: Vercel detected. Using temporary path: {DATABASE_URL}")
-else:
-    # 로컬 환경: .env 또는 기본 경로 사용
-    DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///site.db")
+# 💡 Vercel 환경 변수 'DATABASE_URL' 사용을 강제합니다.
+# 로컬 테스트 시에는 .env 파일에 Postgres 연결 문자열을 설정해야 합니다.
+# 예: DATABASE_URL="postgresql://user:password@host:port/dbname"
+DATABASE_URL = os.environ.get("DATABASE_URL")
+
+if not DATABASE_URL:
+    print("🚨 오류: DATABASE_URL 환경 변수가 설정되지 않았습니다. Postgres 연결이 필요합니다.")
+    # 임시로 더미 SQLite를 사용하지만, Vercel에서는 여전히 데이터가 휘발성입니다.
+    # 운영 환경에서는 반드시 Postgres URL을 설정해야 합니다.
+    FALLBACK_DB_PATH = Path(__file__).parent / "site.db"
+    DATABASE_URL = f"sqlite:///{FALLBACK_DB_PATH}"
 
 ADMIN_KEY = os.environ.get("ADMIN_KEY", "changeme")
 MAX_HISTORY = int(os.environ.get("MAX_HISTORY", 1000)) 
-MAX_SESSION_LIFETIME_HOURS = int(os.environ.get("MAX_SESSION_LIFETIME_HOURS", 8760000))  # 기본값: 1000년 (365일 * 1000년 = 365000일 = 8760000시간)
+
+# MAX_SESSION_LIFETIME_HOURS 변수는 정리 로직이 제거되었으므로 더 이상 사용되지 않습니다.
 
 
 app = Flask(__name__) 
@@ -43,16 +40,27 @@ app = Flask(__name__)
 # DB 설정
 app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URL
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+# 💡 Postgres 사용 시 연결 관련 설정 (선택적)
+# Vercel Postgres의 경우 대부분 기본 설정으로 충분합니다.
+# if DATABASE_URL.startswith("postgresql"):
+#     app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+#         'pool_size': 5,          # 커넥션 풀 크기
+#         'max_overflow': 10,      # 최대 오버플로우
+#         'pool_recycle': 3600,    # 연결 재활용 시간 (초)
+#     }
+
+
 db = SQLAlchemy(app) 
 
 
 # ----------------------------------------------------
-# 📚 데이터베이스 모델 정의 (변경 없음)
+# 📚 데이터베이스 모델 정의 
 # ----------------------------------------------------
 
 # UTC 시간을 DB에 저장할 때 사용
 def now_utc():
-    # SQLite는 타임존 정보를 지원하지 않으므로, naive datetime 객체로 변환하여 저장
+    # 타임존 정보가 없는 naive datetime 객체로 저장
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 class Session(db.Model):
@@ -91,13 +99,13 @@ class LocationHistory(db.Model):
 # ----------------------------------------------------
 
 with app.app_context():
-    # Vercel에서 /tmp 경로를 사용하더라도 테이블이 확실히 생성되도록 보장
+    # Postgres DB에 테이블이 생성되도록 보장
     db.create_all() 
-    print("데이터베이스 초기화 완료 (site.db)")
+    print(f"데이터베이스 초기화 완료 (DB Type: {'PostgreSQL' if DATABASE_URL.startswith('postgresql') else 'SQLite'})")
 
 
 # ----------------------------------------------------
-# 헬퍼 함수, 정리 로직, 스케줄러 (변경 없음)
+# 헬퍼 함수 및 경로 (Routes) 정의 
 # ----------------------------------------------------
 
 def _get_session(token: str) -> Session:
@@ -106,31 +114,7 @@ def _get_session(token: str) -> Session:
         abort(404, description="Unknown share token")
     return session
 
-def cleanup_expired_sessions():
-    with app.app_context():
-        expiration_time = datetime.utcnow() - timedelta(hours=MAX_SESSION_LIFETIME_HOURS)
-        sessions_to_delete = Session.query.filter(Session.created_at < expiration_time).all()
-        
-        count = len(sessions_to_delete)
-        for s in sessions_to_delete:
-            db.session.delete(s)
-        
-        db.session.commit()
-        
-        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {count}개의 만료된 세션 정리 완료 (기준: {MAX_SESSION_LIFETIME_HOURS}시간)")
-
-scheduler = BackgroundScheduler()
-# APScheduler는 Vercel의 서버리스 환경에서는 제대로 작동하지 않을 수 있습니다.
-# Vercel 함수가 주기적으로 실행되는 환경이 아니기 때문입니다.
-# 하지만 로컬 테스트 및 구색을 위해 코드는 유지합니다.
-scheduler.add_job(func=cleanup_expired_sessions, trigger="interval", minutes=30)
-scheduler.start()
-atexit.register(lambda: scheduler.shutdown())
-
-
-# ----------------------------------------------------
-# 🗺️ 경로 (Routes) 정의 (데이터 처리 로직 변경 없음)
-# ----------------------------------------------------
+# 🚨 세션 정리 로직 (APScheduler)은 Vercel 환경 안정성을 위해 제거되었습니다.
 
 @app.get("/")
 def index():
@@ -215,6 +199,7 @@ def track_page(token: str):
     # 세션 정보를 템플릿에 전달
     session_info = {
         "token": session.token,
+        # DB의 UTC 시간에 한국 시간(KST, UTC+9)을 적용하여 출력
         "created_at": (session.created_at + timedelta(hours=9)).strftime('%Y-%m-%d %H:%M:%S') if session.created_at else None,
         "has_location": session.latest_lat is not None,
         "count": session.history.count(),
@@ -235,6 +220,7 @@ def get_session_history(token: str):
             'accuracy': h.accuracy,
             'heading': h.heading,
             'speed': h.speed,
+            # DB의 UTC 시간에 한국 시간(KST, UTC+9)을 적용하여 출력
             'captured_at': (h.captured_at + timedelta(hours=9)).strftime('%Y-%m-%d %H:%M:%S') if h.captured_at else None
         }
         for h in history_query.limit(MAX_HISTORY).all()
@@ -283,6 +269,7 @@ def admin_sessions():
                     'accuracy': h.accuracy,
                     'heading': h.heading,
                     'speed': h.speed,
+                    # DB의 UTC 시간에 한국 시간(KST, UTC+9)을 적용하여 출력
                     'captured_at': (h.captured_at + timedelta(hours=9)).strftime('%Y-%m-%d %H:%M:%S')
                 }
                 for h in history_query.limit(MAX_HISTORY).all()
@@ -294,13 +281,12 @@ def admin_sessions():
         selected_token=selected_token,
         history=selected_history,
         max_history=MAX_HISTORY,
-        max_session_lifetime_hours=MAX_SESSION_LIFETIME_HOURS,
+        max_session_lifetime_hours="무제한 (Postgres)", 
     )
 
 
 if __name__ == "__main__":
     print(f"ADMIN_KEY: {ADMIN_KEY}")
     print(f"DATABASE: {DATABASE_URL}")
-    print(f"MAX_SESSION_LIFETIME_HOURS: {MAX_SESSION_LIFETIME_HOURS}시간")
-    print("APScheduler가 백그라운드에서 실행 중입니다...")
+    print("APScheduler가 실행되지 않습니다.")
     app.run(debug=True, host="0.0.0.0", port=8888, use_reloader=False)
