@@ -11,7 +11,7 @@ import atexit
 
 from flask import Flask, abort, jsonify, render_template, request, url_for
 from flask_sqlalchemy import SQLAlchemy 
-# APScheduler는 로컬에서 만료 세션 정리용이었으므로 제거합니다.
+# APScheduler는 세션 정리 로직 제거로 인해 제거합니다.
 # from apscheduler.schedulers.background import BackgroundScheduler 
 
 # .env 파일을 읽어 환경 변수를 로드합니다. (로컬 실행 시 필요)
@@ -24,7 +24,7 @@ load_dotenv()
 ADMIN_KEY = os.environ.get("ADMIN_KEY", "changeme")
 MAX_HISTORY = int(os.environ.get("MAX_HISTORY", 1500)) 
 
-# 🚨 **중요 수정:** Vercel 환경 감지 및 경로 조건부 설정
+# 🚨 **수정된 핵심 로직:** Vercel 환경에서 쓰기 가능한 경로로 분기 처리
 if os.getenv('VERCEL') == '1' or os.getenv('VERCEL_ENV'):
     # Vercel: 쓰기가 허용된 /tmp 디렉토리에 저장 (휘발성 데이터!)
     SQLITE_DB_PATH = "/tmp/database.db"
@@ -96,6 +96,7 @@ class LocationHistory(db.Model):
 
 with app.app_context():
     # 데이터베이스 파일이 없으면 생성되도록 보장
+    # Vercel 환경에서는 /tmp/database.db를 생성합니다.
     db.create_all() 
     print(f"데이터베이스 초기화 완료 (DB Type: {'MySQL' if DATABASE_URL.startswith('mysql') else 'SQLite'})")
 
@@ -109,8 +110,6 @@ def _get_session(token: str) -> Session:
     if session is None:
         abort(404, description="Unknown share token")
     return session
-
-# 🚨 만료 세션 정리 함수와 스케줄러는 제거되었습니다. (세션은 무제한 유지)
 
 
 # ----------------------------------------------------
