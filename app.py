@@ -1,14 +1,8 @@
-# app.py (Vercel 호환성 강화 버전)
-
 from __future__ import annotations
 
 import os
 from dotenv import load_dotenv 
-from pathlib import Path # 경로 처리를 위해 추가
-
-# .env 파일을 읽어 환경 변수를 로드합니다. (로컬 실행 시 필요)
-load_dotenv() 
-
+from pathlib import Path 
 import secrets
 from collections import deque
 from datetime import datetime, timezone, timedelta
@@ -19,30 +13,50 @@ from flask import Flask, abort, jsonify, render_template, request, url_for
 from flask_sqlalchemy import SQLAlchemy 
 from apscheduler.schedulers.background import BackgroundScheduler 
 
+# .env 파일을 읽어 환경 변수를 로드합니다. (로컬 실행 시 필요)
+load_dotenv() 
+
 # ----------------------------------------------------
-# ⚙️ 환경 변수 및 전역 설정
+# ⚙️ 환경 변수 및 전역 설정 (MySQL 연동 부분)
 # ----------------------------------------------------
 
-# Vercel 환경 감지 및 DB 경로 설정 수정
-if os.getenv('VERCEL') == '1' or os.getenv('VERCEL_ENV'):
-    # Vercel 환경: 쓰기가 가능한 /tmp 디렉토리에 DB 파일을 생성
-    DB_FILE_PATH = Path('/tmp') / 'site.db'
-    DATABASE_URL = f"sqlite:///{DB_FILE_PATH}"
-    print(f"INFO: Vercel detected. Using temporary path: {DATABASE_URL}")
-else:
-    # 로컬 환경: .env 또는 기본 경로 사용
-    DATABASE_URL = os.environ.get("DATABASE_URL", "sqlite:///site.db")
+# PHP 파일에서 가져온 MySQL DB 정보
+MYSQL_HOST = 'localhost'
+MYSQL_USER = 'sky16015'
+MYSQL_PASSWORD = 'sky02564!'
+MYSQL_DB = 'sky16015'
+
+# Flask-SQLAlchemy용 MySQL 연결 URL 생성 (PyMySQL 드라이버 사용)
+# 형식: mysql+pymysql://<user>:<password>@<host>/<dbname>
+FALLBACK_DATABASE_URL = f"mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD}@{MYSQL_HOST}/{MYSQL_DB}"
+
+# Vercel 환경 변수 'DATABASE_URL'을 우선 사용하고, 없으면 위 MySQL 정보를 사용합니다.
+DATABASE_URL = os.environ.get("DATABASE_URL", FALLBACK_DATABASE_URL)
+
 
 ADMIN_KEY = os.environ.get("ADMIN_KEY", "changeme")
-MAX_HISTORY = int(os.environ.get("MAX_HISTORY", 1000)) 
-MAX_SESSION_LIFETIME_HOURS = int(os.environ.get("MAX_SESSION_LIFETIME_HOURS", 8760000))  # 기본값: 1000년 (365일 * 1000년 = 365000일 = 8760000시간)
+MAX_HISTORY = int(os.environ.get("MAX_HISTORY", 1500)) 
+MAX_SESSION_LIFETIME_HOURS = int(os.environ.get("MAX_SESSION_LIFETIME_HOURS", 8760000)) 
 
+# Vercel 환경 감지 및 DB 경로 출력
+if os.getenv('VERCEL') == '1' or os.getenv('VERCEL_ENV'):
+    print(f"INFO: Vercel detected. Using external database URL.")
+else:
+    print(f"INFO: Local environment. Using DATABASE_URL: {DATABASE_URL}")
 
 app = Flask(__name__) 
 
 # DB 설정
 app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URL
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+# MySQL 연결 시 인코딩 및 연결 끊김 방지 설정 추가
+if DATABASE_URL.startswith("mysql"):
+    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+        'pool_recycle': 280,  # MySQL 연결 끊김 방지
+        'charset': 'utf8mb4'
+    }
+
 db = SQLAlchemy(app) 
 
 
@@ -52,7 +66,7 @@ db = SQLAlchemy(app)
 
 # UTC 시간을 DB에 저장할 때 사용
 def now_utc():
-    # SQLite는 타임존 정보를 지원하지 않으므로, naive datetime 객체로 변환하여 저장
+    # 타임존 정보가 없는 naive datetime 객체로 저장
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 class Session(db.Model):
@@ -91,9 +105,9 @@ class LocationHistory(db.Model):
 # ----------------------------------------------------
 
 with app.app_context():
-    # Vercel에서 /tmp 경로를 사용하더라도 테이블이 확실히 생성되도록 보장
+    # MySQL 환경에서 테이블이 없으면 생성되도록 보장
     db.create_all() 
-    print("데이터베이스 초기화 완료 (site.db)")
+    print(f"데이터베이스 초기화 완료 (DB Type: {'MySQL' if DATABASE_URL.startswith('mysql') else 'SQLite'})")
 
 
 # ----------------------------------------------------
@@ -108,6 +122,7 @@ def _get_session(token: str) -> Session:
 
 def cleanup_expired_sessions():
     with app.app_context():
+        # UTC를 기준으로 만료 시간 계산
         expiration_time = datetime.utcnow() - timedelta(hours=MAX_SESSION_LIFETIME_HOURS)
         sessions_to_delete = Session.query.filter(Session.created_at < expiration_time).all()
         
@@ -120,16 +135,14 @@ def cleanup_expired_sessions():
         print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {count}개의 만료된 세션 정리 완료 (기준: {MAX_SESSION_LIFETIME_HOURS}시간)")
 
 scheduler = BackgroundScheduler()
-# APScheduler는 Vercel의 서버리스 환경에서는 제대로 작동하지 않을 수 있습니다.
-# Vercel 함수가 주기적으로 실행되는 환경이 아니기 때문입니다.
-# 하지만 로컬 테스트 및 구색을 위해 코드는 유지합니다.
+# Vercel에서는 작동하지 않지만 로컬 테스트를 위해 유지
 scheduler.add_job(func=cleanup_expired_sessions, trigger="interval", minutes=30)
 scheduler.start()
 atexit.register(lambda: scheduler.shutdown())
 
 
 # ----------------------------------------------------
-# 🗺️ 경로 (Routes) 정의 (데이터 처리 로직 변경 없음)
+# 🗺️ 경로 (Routes) 정의 (변경 없음)
 # ----------------------------------------------------
 
 @app.get("/")
@@ -215,6 +228,7 @@ def track_page(token: str):
     # 세션 정보를 템플릿에 전달
     session_info = {
         "token": session.token,
+        # DB의 UTC 시간에 한국 시간(KST, UTC+9)을 적용하여 출력
         "created_at": (session.created_at + timedelta(hours=9)).strftime('%Y-%m-%d %H:%M:%S') if session.created_at else None,
         "has_location": session.latest_lat is not None,
         "count": session.history.count(),
@@ -235,6 +249,7 @@ def get_session_history(token: str):
             'accuracy': h.accuracy,
             'heading': h.heading,
             'speed': h.speed,
+            # DB의 UTC 시간에 한국 시간(KST, UTC+9)을 적용하여 출력
             'captured_at': (h.captured_at + timedelta(hours=9)).strftime('%Y-%m-%d %H:%M:%S') if h.captured_at else None
         }
         for h in history_query.limit(MAX_HISTORY).all()
@@ -283,6 +298,7 @@ def admin_sessions():
                     'accuracy': h.accuracy,
                     'heading': h.heading,
                     'speed': h.speed,
+                    # DB의 UTC 시간에 한국 시간(KST, UTC+9)을 적용하여 출력
                     'captured_at': (h.captured_at + timedelta(hours=9)).strftime('%Y-%m-%d %H:%M:%S')
                 }
                 for h in history_query.limit(MAX_HISTORY).all()
