@@ -14,21 +14,26 @@ from flask_sqlalchemy import SQLAlchemy
 load_dotenv() 
 
 # ----------------------------------------------------
-# ⚙️ 환경 변수 및 전역 설정 (외부 DB 사용)
+# ⚙️ 환경 변수 및 전역 설정 (Cafe24 MySQL 사용 가정)
 # ----------------------------------------------------
 
-# 💡 Vercel 환경 변수 'DATABASE_URL'에서 MySQL 연결 문자열을 읽어옵니다.
-DATABASE_URL = os.environ.get("DATABASE_URL")
+# 💡 MySQL DB 연결 문자열을 코드 내부에 명시합니다. (보안상 .env 파일 사용을 권장합니다.)
+# 사용자님이 지정하신 값: mysql+pymysql://sky17891:sky02564!!@sky17891.mycafe24.com:3306/sky17891
+# (DB 이름이 sky17891인지 sky17891_db인지 확인 후 사용하세요.)
+DEFAULT_DATABASE_URL = "mysql+pymysql://sky17891:sky02564!!@sky17891.mycafe24.com:3306/sky17891"
 
-if not DATABASE_URL:
-    # DATABASE_URL이 설정되지 않은 경우, 로컬 테스트를 위한 대체 경로 사용
-    print("🚨 [WARNING] DATABASE_URL 환경 변수가 설정되지 않아 로컬 SQLite 대체 경로를 사용합니다.")
-    # 로컬 환경에서만 쓰기 가능한 경로 사용
+# Vercel 환경 변수가 있다면 그것을 사용하고, 없다면 위에서 명시한 값을 사용합니다.
+# Vercel에 배포할 때는 환경 변수 (DATABASE_URL)를 설정해야 이 값이 무시됩니다.
+DATABASE_URL = os.environ.get("DATABASE_URL", DEFAULT_DATABASE_URL)
+
+if DATABASE_URL.startswith("sqlite"):
+    # 로컬 테스트를 위해 임시 SQLite 사용 (Vercel 배포 시에는 반드시 환경 변수를 설정하세요!)
+    print("🚨 [WARNING] DATABASE_URL이 설정되지 않아 로컬 SQLite 대체 경로를 사용합니다. DB 연결 문자열을 확인하세요.")
     FALLBACK_DB_PATH = Path(__file__).parent / "local_fallback.db"
     DATABASE_URL = f"sqlite:///{FALLBACK_DB_PATH}"
 
 ADMIN_KEY = os.environ.get("ADMIN_KEY", "changeme")
-MAX_HISTORY = int(os.environ.get("MAX_HISTORY", 1000)) 
+MAX_HISTORY = int(os.environ.get("MAX_HISTORY", 1500)) 
 
 
 app = Flask(__name__) 
@@ -37,10 +42,10 @@ app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URL
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-# MySQL 연결 시 필요할 수 있는 추가 설정 (연결 끊김 방지)
+# MySQL 연결 시 필요할 수 있는 추가 설정 (선택적)
 if DATABASE_URL.startswith("mysql"):
     app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
-        'pool_recycle': 3600,  # 1시간마다 연결 재활용 (DB 서버의 타임아웃 방지)
+        'pool_recycle': 3600,  # 1시간마다 연결 재활용 (Cafe24 DB Timeout 방지)
     }
 
 db = SQLAlchemy(app) 
@@ -59,6 +64,7 @@ class Session(db.Model):
     __tablename__ = 'sessions'
     id = db.Column(db.Integer, primary_key=True)
     token = db.Column(db.String(32), unique=True, nullable=False)
+    # MySQL은 기본적으로 DATETIME에 타임존을 저장하지 않으므로, naive 객체를 저장합니다.
     created_at = db.Column(db.DateTime, default=now_utc) 
     latest_lat = db.Column(db.Float)
     latest_lng = db.Column(db.Float)
@@ -66,6 +72,7 @@ class Session(db.Model):
     latest_heading = db.Column(db.Float)
     latest_speed = db.Column(db.Float)
     latest_captured_at = db.Column(db.DateTime) 
+    # cascade="all, delete-orphan"을 사용하여 세션 삭제 시 기록도 삭제
     history = db.relationship('LocationHistory', backref='session', lazy='dynamic', cascade="all, delete-orphan") 
 
     def __repr__(self):
@@ -91,7 +98,7 @@ class LocationHistory(db.Model):
 # ----------------------------------------------------
 
 with app.app_context():
-    # 연결된 DB (MySQL 또는 SQLite)에 테이블이 생성되도록 보장
+    # 연결된 DB (MySQL)에 테이블이 생성되도록 보장
     db.create_all() 
     db_type = 'MySQL' if DATABASE_URL.startswith('mysql') else 'SQLite (FALLBACK)'
     print(f"데이터베이스 초기화 완료 (DB Type: {db_type})")
@@ -106,6 +113,8 @@ def _get_session(token: str) -> Session:
     if session is None:
         abort(404, description="Unknown share token")
     return session
+
+# 🚨 세션 정리 로직 (APScheduler)은 Vercel 환경 안정성 및 무제한 저장 요구사항에 따라 제거되었습니다.
 
 @app.get("/")
 def index():
@@ -271,13 +280,12 @@ def admin_sessions():
         sessions=items,
         selected_token=selected_token,
         history=selected_history,
-        max_history=MAX_HISTORY,
-        max_session_lifetime_hours="무제한 (외부 DB)", 
+        max_history=MAX_HISTORY       
     )
 
 
 if __name__ == "__main__":
     print(f"ADMIN_KEY: {ADMIN_KEY}")
-    print(f"DATABASE: {DATABASE_URL}")
-    print("외부 DB를 사용하므로 APScheduler는 실행되지 않습니다.")
+    print(f"DATABASE: {DATABASE_URL}")   
+    print("APScheduler가 실행되지 않습니다.")
     app.run(debug=True, host="0.0.0.0", port=8888, use_reloader=False)
