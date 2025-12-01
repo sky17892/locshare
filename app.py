@@ -11,40 +11,37 @@ import atexit
 
 from flask import Flask, abort, jsonify, render_template, request, url_for
 from flask_sqlalchemy import SQLAlchemy 
-from apscheduler.schedulers.background import BackgroundScheduler 
+# APScheduler는 로컬에서 만료 세션 정리용이었으므로 제거합니다.
+# from apscheduler.schedulers.background import BackgroundScheduler 
 
 # .env 파일을 읽어 환경 변수를 로드합니다. (로컬 실행 시 필요)
 load_dotenv() 
 
 # ----------------------------------------------------
-# ⚙️ 환경 변수 및 전역 설정 (MySQL 연동 부분)
+# ⚙️ 환경 변수 및 전역 설정 (SQLite 연동 부분)
 # ----------------------------------------------------
 
-# PHP 파일에서 가져온 MySQL DB 정보
-# 🚨 수정: 포트 번호(:3306)를 제거하고 호스트 주소만 남겼습니다.
-MYSQL_HOST = 'sky16015.dothome.co.kr'
-MYSQL_USER = 'sky16015'
-MYSQL_PASSWORD = 'sky02564!'
-MYSQL_DB = 'sky16015'
+# SQLite 데이터베이스 파일 경로 설정
+# Vercel 환경에서는 이 파일이 /tmp 디렉토리에 생성되어야 하지만, Vercel의 파일 시스템은 휘발성입니다.
+# Vercel에서 데이터 영속성을 유지하려면 Vercel Postgres 같은 외부 DB를 사용해야 합니다.
+# 이 코드는 로컬 실행이나 Vercel에서 '임시 데이터 저장' 용도로만 사용 가능합니다.
+SQLITE_DB_PATH = Path(__file__).parent / "database.db"
 
-# Flask-SQLAlchemy용 MySQL 연결 URL 생성 (PyMySQL 드라이버 사용)
-# 형식: mysql+pymysql://<user>:<password>@<host>/<dbname>?charset=utf8mb4
-# 🚨 수정: 인코딩 오류 방지를 위해 '?charset=utf8mb4'를 다시 추가했습니다.
-FALLBACK_DATABASE_URL = (
-    f"mysql+pymysql://{MYSQL_USER}:{MYSQL_PASSWORD}@{MYSQL_HOST}/{MYSQL_DB}?charset=utf8mb4"
-)
+# Flask-SQLAlchemy용 SQLite 연결 URL 생성
+FALLBACK_DATABASE_URL = f"sqlite:///{SQLITE_DB_PATH}"
 
-# Vercel 환경 변수 'DATABASE_URL'을 우선 사용하고, 없으면 위 MySQL 정보를 사용합니다.
+# Vercel 환경 변수 'DATABASE_URL'을 우선 사용하고, 없으면 위 SQLite 정보를 사용합니다.
 DATABASE_URL = os.environ.get("DATABASE_URL", FALLBACK_DATABASE_URL)
 
 
 ADMIN_KEY = os.environ.get("ADMIN_KEY", "changeme")
 MAX_HISTORY = int(os.environ.get("MAX_HISTORY", 1500)) 
-MAX_SESSION_LIFETIME_HOURS = int(os.environ.get("MAX_SESSION_LIFETIME_HOURS", 8760000)) 
+
+# 🚨 세션 시간 제한 관련 변수와 정리 함수를 제거했습니다.
 
 # Vercel 환경 감지 및 DB 경로 출력
 if os.getenv('VERCEL') == '1' or os.getenv('VERCEL_ENV'):
-    print(f"INFO: Vercel detected. Using external database URL.")
+    print(f"INFO: Vercel detected. Using external database URL or SQLite (volatile storage).")
 else:
     print(f"INFO: Local environment. Using DATABASE_URL: {DATABASE_URL}")
 
@@ -54,11 +51,11 @@ app = Flask(__name__)
 app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URL
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-# MySQL 연결 시 인코딩 및 연결 끊김 방지 설정 추가 (charset은 URL에 있으므로 제외)
-if DATABASE_URL.startswith("mysql"):
-    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
-        'pool_recycle': 280,  # MySQL 연결 끊김 방지
-    }
+# MySQL 관련 설정 제거 (SQLite는 필요 없음)
+# if DATABASE_URL.startswith("mysql"):
+#    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+#        'pool_recycle': 280, 
+#    }
 
 db = SQLAlchemy(app) 
 
@@ -108,13 +105,13 @@ class LocationHistory(db.Model):
 # ----------------------------------------------------
 
 with app.app_context():
-    # MySQL 환경에서 테이블이 없으면 생성되도록 보장
+    # 데이터베이스 파일이 없으면 생성되도록 보장
     db.create_all() 
     print(f"데이터베이스 초기화 완료 (DB Type: {'MySQL' if DATABASE_URL.startswith('mysql') else 'SQLite'})")
 
 
 # ----------------------------------------------------
-# 헬퍼 함수, 정리 로직, 스케줄러 (변경 없음)
+# 헬퍼 함수, 정리 로직 (세션 시간 제한 제거됨)
 # ----------------------------------------------------
 
 def _get_session(token: str) -> Session:
@@ -123,25 +120,15 @@ def _get_session(token: str) -> Session:
         abort(404, description="Unknown share token")
     return session
 
-def cleanup_expired_sessions():
-    with app.app_context():
-        # UTC를 기준으로 만료 시간 계산
-        expiration_time = datetime.utcnow() - timedelta(hours=MAX_SESSION_LIFETIME_HOURS)
-        sessions_to_delete = Session.query.filter(Session.created_at < expiration_time).all()
-        
-        count = len(sessions_to_delete)
-        for s in sessions_to_delete:
-            db.session.delete(s)
-        
-        db.session.commit()
-        
-        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {count}개의 만료된 세션 정리 완료 (기준: {MAX_SESSION_LIFETIME_HOURS}시간)")
+# 🚨 만료 세션 정리 함수를 제거했습니다. 세션은 이제 만료되지 않습니다.
+# def cleanup_expired_sessions():
+#     ...
 
-scheduler = BackgroundScheduler()
-# Vercel에서는 작동하지 않지만 로컬 테스트를 위해 유지
-scheduler.add_job(func=cleanup_expired_sessions, trigger="interval", minutes=30)
-scheduler.start()
-atexit.register(lambda: scheduler.shutdown())
+# 🚨 스케줄러와 종료 로직도 제거했습니다.
+# scheduler = BackgroundScheduler()
+# scheduler.add_job(func=cleanup_expired_sessions, trigger="interval", minutes=30)
+# scheduler.start()
+# atexit.register(lambda: scheduler.shutdown())
 
 
 # ----------------------------------------------------
@@ -313,13 +300,13 @@ def admin_sessions():
         selected_token=selected_token,
         history=selected_history,
         max_history=MAX_HISTORY,
-        max_session_lifetime_hours=MAX_SESSION_LIFETIME_HOURS,
+        max_session_lifetime_hours="무제한", # 세션 정리 로직 제거 반영
     )
 
 
 if __name__ == "__main__":
     print(f"ADMIN_KEY: {ADMIN_KEY}")
     print(f"DATABASE: {DATABASE_URL}")
-    print(f"MAX_SESSION_LIFETIME_HOURS: {MAX_SESSION_LIFETIME_HOURS}시간")
-    print("APScheduler가 백그라운드에서 실행 중입니다...")
+    print(f"MAX_SESSION_LIFETIME_HOURS: 무제한 (정리 로직 제거)")
+    print("APScheduler가 실행되지 않습니다 (세션 정리 로직 제거).")
     app.run(debug=True, host="0.0.0.0", port=8888, use_reloader=False)
