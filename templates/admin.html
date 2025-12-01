@@ -14,7 +14,7 @@
     <main class="card card--admin">
       {% if sessions %}
       <div class="table-wrapper">
-        <table>
+        <table id="sessions-table">
           <thead>
             <tr>
               <th>토큰</th>
@@ -24,7 +24,7 @@
               <th>기록</th>
             </tr>
           </thead>
-          <tbody>
+          <tbody id="sessions-tbody">
             {% for item in sessions %}
             <tr>
               <td><code class="token-code">{{ item.token }}</code></td>
@@ -49,45 +49,192 @@
         </table>
       </div>
       {% if selected_token %}
-      <section class="admin-section">
-        <h2>토큰 {{ selected_token }} 기록 (최대 {{ max_history }}건)</h2>
-        {% if history %}
-        <div class="table-wrapper">
-          <table>
-            <thead>
-              <tr>
-                <th>#</th>
-                <th>위도</th>
-                <th>경도</th>
-                <th>정확도</th>
-                <th>방향</th>
-                <th>속도</th>
-                <th>수신 시각</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for item in history %}
-              <tr>
-                <td>{{ loop.index }}</td>
-                <td>{{ "%.6f"|format(item.lat) }}</td>
-                <td>{{ "%.6f"|format(item.lng) }}</td>
-                <td>{{ item.accuracy or "-" }}</td>
-                <td>{{ item.heading or "-" }}</td>
-                <td>{{ item.speed or "-" }}</td>
-                <td>{{ item.captured_at }}</td>
-              </tr>
-              {% endfor %}
-            </tbody>
-          </table>
+      <section class="admin-section" id="history-section">
+        <h2>토큰 {{ selected_token }} 기록 (최대 {{ max_history }}건) <span id="last-update" style="font-size: 0.8em; color: #666;"></span></h2>
+        <div id="history-container">
+          {% if history %}
+          <div class="table-wrapper">
+            <table id="history-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>위도</th>
+                  <th>경도</th>
+                  <th>정확도</th>
+                  <th>방향</th>
+                  <th>속도</th>
+                  <th>수신 시각</th>
+                </tr>
+              </thead>
+              <tbody id="history-tbody">
+                {% for item in history %}
+                <tr>
+                  <td>{{ loop.index }}</td>
+                  <td>{{ "%.6f"|format(item.lat) }}</td>
+                  <td>{{ "%.6f"|format(item.lng) }}</td>
+                  <td>{{ item.accuracy or "-" }}</td>
+                  <td>{{ item.heading or "-" }}</td>
+                  <td>{{ item.speed or "-" }}</td>
+                  <td>{{ item.captured_at }}</td>
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          {% else %}
+          <p id="history-empty">기록이 없습니다.</p>
+          {% endif %}
         </div>
-        {% else %}
-        <p>기록이 없습니다.</p>
-        {% endif %}
       </section>
       {% endif %}
       {% else %}
       <p>생성된 세션이 아직 없습니다.</p>
       {% endif %}
     </main>
+    <script>
+      var adminKey = '{{ admin_key }}';
+      var maxHistory = {{ max_history }};
+      var selectedToken = '{{ selected_token }}' || null;
+      var historyUpdateInterval = null;
+      var sessionsUpdateInterval = null;
+
+      function formatNumber(num) {
+        if (num === null || num === undefined) {
+          return '-';
+        }
+        return num.toFixed(6);
+      }
+
+      function updateSessionsList() {
+        if (!adminKey) {
+          return;
+        }
+        
+        fetch('/api/admin/sessions?key=' + encodeURIComponent(adminKey))
+          .then(function(response) {
+            return response.json();
+          })
+          .then(function(data) {
+            var sessionsTbody = document.getElementById('sessions-tbody');
+            if (!sessionsTbody) {
+              return;
+            }
+            
+            var sessionRows = sessionsTbody.querySelectorAll('tr');
+            var sessionMap = {};
+            for (var i = 0; i < data.sessions.length; i++) {
+              var session = data.sessions[i];
+              sessionMap[session.token] = session;
+            }
+
+            for (var j = 0; j < sessionRows.length; j++) {
+              var row = sessionRows[j];
+              var tokenCell = row.querySelector('.token-code');
+              if (tokenCell) {
+                var token = tokenCell.textContent.trim();
+                var session = sessionMap[token];
+                if (session) {
+                  // 위치 수신 상태 업데이트
+                  var locationCell = row.querySelector('td:nth-child(4)');
+                  if (locationCell) {
+                    locationCell.textContent = session.has_location ? 'O' : 'X';
+                  }
+                  
+                  // 기록 수 업데이트
+                  var countCell = row.querySelector('td:nth-child(5)');
+                  if (countCell) {
+                    var viewLink = countCell.querySelector('a');
+                    var viewLinkHref = viewLink ? viewLink.href : '{{ url_for("admin_sessions") }}?key=' + encodeURIComponent(adminKey) + '&token=' + token;
+                    countCell.innerHTML = session.count + '/' + maxHistory + ' <a href="' + viewLinkHref + '" class="table-link">보기</a>';
+                  }
+                }
+              }
+            }
+          })
+          .catch(function(error) {
+            console.error('세션 목록 업데이트 실패:', error);
+          });
+      }
+
+      function updateHistory() {
+        if (!selectedToken) {
+          return;
+        }
+        
+        fetch('/api/session/' + selectedToken + '/history')
+          .then(function(response) {
+            return response.json();
+          })
+          .then(function(data) {
+            var tbody = document.getElementById('history-tbody');
+            var emptyMsg = document.getElementById('history-empty');
+            var lastUpdate = document.getElementById('last-update');
+            
+            if (lastUpdate) {
+              var now = new Date();
+              lastUpdate.textContent = '(마지막 업데이트: ' + now.toLocaleTimeString('ko-KR') + ')';
+            }
+
+            if (!data.history || data.history.length === 0) {
+              if (tbody) {
+                tbody.innerHTML = '';
+              }
+              if (emptyMsg) {
+                emptyMsg.style.display = 'block';
+              }
+              return;
+            }
+
+            if (emptyMsg) {
+              emptyMsg.style.display = 'none';
+            }
+
+            if (tbody) {
+              var html = '';
+              for (var i = 0; i < data.history.length; i++) {
+                var item = data.history[i];
+                html += '<tr>';
+                html += '<td>' + (i + 1) + '</td>';
+                html += '<td>' + formatNumber(item.lat) + '</td>';
+                html += '<td>' + formatNumber(item.lng) + '</td>';
+                html += '<td>' + (item.accuracy !== null && item.accuracy !== undefined ? item.accuracy : '-') + '</td>';
+                html += '<td>' + (item.heading !== null && item.heading !== undefined ? item.heading : '-') + '</td>';
+                html += '<td>' + (item.speed !== null && item.speed !== undefined ? item.speed : '-') + '</td>';
+                html += '<td>' + item.captured_at + '</td>';
+                html += '</tr>';
+              }
+              tbody.innerHTML = html;
+            }
+          })
+          .catch(function(error) {
+            console.error('히스토리 업데이트 실패:', error);
+          });
+      }
+
+      // 선택된 토큰이 있으면 히스토리 갱신 시작
+      if (selectedToken) {
+        // 3초마다 히스토리 갱신
+        historyUpdateInterval = setInterval(updateHistory, 3000);
+        
+        // 초기 로드 후 즉시 한 번 갱신
+        setTimeout(updateHistory, 500);
+      }
+
+      // 5초마다 세션 목록 갱신
+      sessionsUpdateInterval = setInterval(updateSessionsList, 5000);
+      
+      // 초기 로드 후 즉시 한 번 갱신
+      setTimeout(updateSessionsList, 1000);
+
+      // 페이지를 떠날 때 인터벌 정리
+      window.addEventListener('beforeunload', function() {
+        if (historyUpdateInterval !== null) {
+          clearInterval(historyUpdateInterval);
+        }
+        if (sessionsUpdateInterval !== null) {
+          clearInterval(sessionsUpdateInterval);
+        }
+      });
+    </script>
   </body>
 </html>
