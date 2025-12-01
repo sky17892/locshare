@@ -4,3 +4,4 @@ sqlalchemy
 python-dotenv
 APScheduler
 Flask-SQLAlchemy
+psycopg2-binary
